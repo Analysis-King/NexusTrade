@@ -65,3 +65,46 @@ export const botsApi = {
   trades:  (id: string, limit = 50) =>
     api.get<Trade[]>(`/bots/${id}/trades?limit=${limit}`),
 };
+
+/* ─── Strategies ───────────────────────────────────────── */
+
+export interface StrategyMeta {
+  filename: string;
+  name: string;
+  desc: string;
+  author: string;
+}
+
+export const strategiesApi = {
+  list: () => api.get<StrategyMeta[]>('/strategies'),
+};
+
+/* ─── Dev (backtest, geçici) ───────────────────────────── */
+
+export interface BacktestParams {
+  instance: string;
+  symbol: string;
+  interval: Interval;
+  days?: number;
+  min_quality?: number;
+  tp_mode?: string;
+}
+
+export interface BacktestResult {
+  trades?: number;
+  winRate?: number;
+  totalPnl?: number;
+  maxDrawdown?: number;
+  // Backend strategy bağımlı, esnek tutuyoruz
+  [key: string]: unknown;
+}
+
+export const devApi = {
+  poolStats: () => api.get<unknown>('/dev/pool/stats'),
+  poolLoad: (instance: string, strategy_file: string) =>
+    api.post<unknown>('/dev/pool/load', { instance, strategy_file }),
+  poolDrop: (instance: string) =>
+    api.post<unknown>('/dev/pool/drop', { instance }),
+  backtest: (params: BacktestParams) =>
+    api.post<BacktestResult>('/dev/pool/backtest', params),
+};

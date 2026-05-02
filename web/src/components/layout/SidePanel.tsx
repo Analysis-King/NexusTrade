@@ -3,10 +3,10 @@
  *
  * Aktif tab'a göre içerik render eder. İlk versiyonda sadece İşlemler ve Portföy
  * gerçek; diğerleri "Yakında" placeholder.
- *
- * Ad
  */
 
+import { TradingPanel } from '@/components/bots/TradingPanel';
+import { PortfolioPanel } from '@/components/bots/PortfolioPanel';
 import type { TabId } from './TabRail';
 
 const TAB_TITLES: Record<TabId, string> = {
@@ -18,37 +18,28 @@ const TAB_TITLES: Record<TabId, string> = {
 };
 
 export function SidePanel({ tab }: { tab: TabId }): JSX.Element {
+  // Trading ve Portfolio kendi başlıklarını/header'larını yönetir
+  if (tab === 'trading') return <TradingPanel />;
+  if (tab === 'portfolio') {
+    return (
+      <div className="h-full flex flex-col overflow-hidden">
+        <div className="panel-header !text-sm !normal-case !tracking-normal">
+          <span className="text-text font-medium">Portföy</span>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <PortfolioPanel />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col">
       <div className="panel-header !text-sm !normal-case !tracking-normal">
         <span className="text-text font-medium">{TAB_TITLES[tab]}</span>
       </div>
       <div className="panel-body p-3">
-        {tab === 'trading' && <TradingPlaceholder />}
-        {tab === 'portfolio' && <PortfolioPlaceholder />}
-        {(tab === 'alerts' || tab === 'layers' || tab === 'watcher') && (
-          <ComingSoon label={TAB_TITLES[tab]} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TradingPlaceholder(): JSX.Element {
-  return (
-    <div className="text-sm text-muted">
-      <div className="rounded border border-dashed border-border p-4 text-center">
-        Bot listesi ve yeni bot oluşturma sıradaki adımda gelecek.
-      </div>
-    </div>
-  );
-}
-
-function PortfolioPlaceholder(): JSX.Element {
-  return (
-    <div className="text-sm text-muted">
-      <div className="rounded border border-dashed border-border p-4 text-center">
-        Bakiye ve açık pozisyonlar sıradaki adımda gelecek.
+        <ComingSoon label={TAB_TITLES[tab]} />
       </div>
     </div>
   );
