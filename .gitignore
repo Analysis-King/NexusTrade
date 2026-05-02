@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Build
+dist/
+build/
+
+# Environment & secrets — KESİNLİKLE COMMIT EDİLMEZ
+.env
+.env.local
+.env.production
+*.key
+*.pem
+
+# Persistence dosyaları (kullanıcı verisi)
+data/
+bots.json
+trade_history.json
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# OS
+Thumbs.db

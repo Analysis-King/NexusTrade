@@ -1,0 +1,4 @@
+# NexusTrade Python worker'ları için bağımlılıklar
+# Hafta 1 — minimum set; Hafta 2'de genişletilecek
+numpy>=1.24.0
+pandas>=2.0.0
