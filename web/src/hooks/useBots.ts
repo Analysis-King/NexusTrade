@@ -14,12 +14,19 @@ import {
   useQueryClient,
   type UseMutationResult,
 } from '@tanstack/react-query';
-import { botsApi, type CreateBotInput } from '@/api/endpoints';
+import {
+  botsApi,
+  type CreateBotInput,
+  type DeployProfileGateInput,
+  type ProfileGateDeployResult,
+  type ProfileGateStatus,
+} from '@/api/endpoints';
 import { ws } from '@/api/ws';
 import type { BotConfig, BotSnapshot, Trade } from '@/types/api';
 
 const KEY = {
   list: ['bots'] as const,
+  profileGate: ['bots', 'profile-gate'] as const,
   detail: (id: string) => ['bots', id] as const,
   trades: (id: string) => ['bots', id, 'trades'] as const,
 };
@@ -49,6 +56,19 @@ export function useBots() {
 
 /** Tek bir bot detayı (snapshot — config + state + position). */
 export function useBot(id: string | null) {
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    if (!id) return undefined;
+    const unsub = ws.onBotEvent((evt) => {
+      if (evt.botId !== id) return;
+      qc.invalidateQueries({ queryKey: KEY.list });
+      qc.invalidateQueries({ queryKey: KEY.detail(id) });
+      qc.invalidateQueries({ queryKey: KEY.trades(id) });
+    });
+    return unsub;
+  }, [id, qc]);
+
   return useQuery({
     queryKey: id ? KEY.detail(id) : ['bots', 'null'],
     queryFn: () => botsApi.get(id!),
@@ -59,10 +79,23 @@ export function useBot(id: string | null) {
 
 /** Bot trade history. */
 export function useBotTrades(id: string | null, limit = 50) {
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    if (!id) return undefined;
+    const unsub = ws.onBotEvent((evt) => {
+      if (evt.botId !== id) return;
+      qc.invalidateQueries({ queryKey: KEY.trades(id) });
+      qc.invalidateQueries({ queryKey: KEY.detail(id) });
+    });
+    return unsub;
+  }, [id, qc]);
+
   return useQuery({
     queryKey: id ? [...KEY.trades(id), limit] : ['bots', 'null'],
     queryFn: () => botsApi.trades(id!, limit),
     enabled: !!id,
+    refetchInterval: id ? 5_000 : false,
   });
 }
 
@@ -72,6 +105,26 @@ export function useCreateBot(): UseMutationResult<BotConfig, Error, CreateBotInp
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateBotInput) => botsApi.create(input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: KEY.list }),
+  });
+}
+
+export function useProfileGate() {
+  return useQuery<ProfileGateStatus, Error>({
+    queryKey: KEY.profileGate,
+    queryFn: () => botsApi.profileGate(),
+    staleTime: 30_000,
+  });
+}
+
+export function useDeployProfileGate(): UseMutationResult<
+  ProfileGateDeployResult,
+  Error,
+  DeployProfileGateInput
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: DeployProfileGateInput) => botsApi.deployProfileGate(input),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY.list }),
   });
 }

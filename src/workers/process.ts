@@ -95,9 +95,13 @@ export class WorkerProcess extends EventEmitter {
     return new Promise<T>((resolve, reject) => {
       const id = randomUUID();
       const timer = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        const err = new WorkerError(`Request timeout (${timeoutMs ?? this.defaultTimeoutMs}ms): ${cmd}`);
         this.pending.delete(id);
         this.inflight = Math.max(0, this.inflight - 1);
-        reject(new WorkerError(`Request timeout (${timeoutMs ?? this.defaultTimeoutMs}ms): ${cmd}`));
+        reject(err);
+        this.terminateAfterTimeout(err);
       }, timeoutMs ?? this.defaultTimeoutMs);
 
       this.pending.set(id, {
@@ -215,5 +219,17 @@ export class WorkerProcess extends EventEmitter {
     this.pending.clear();
     this.inflight = 0;
     this.emit('dead', err);
+  }
+
+  private terminateAfterTimeout(err: Error): void {
+    if (this.dead) return;
+    const child = this.child;
+    log.warn({ err: err.message }, 'Python worker timeout, process yenilenecek');
+    this.markDead(err);
+    try {
+      child?.kill('SIGKILL');
+    } catch {
+      /* ignore */
+    }
   }
 }

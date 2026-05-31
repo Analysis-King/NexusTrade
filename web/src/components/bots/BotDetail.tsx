@@ -5,11 +5,10 @@
  * - Sermaye & risk özeti
  * - Açık pozisyon kartı (varsa)
  * - Performans (PnL bugün / toplam, son sinyal, candle sayısı)
- * - Backtest paneli (collapsible)
  * - Son trade'ler listesi
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowLeft, Play, Pause, Square, Trash2, Loader2,
   TrendingUp, TrendingDown, Activity,
@@ -17,14 +16,15 @@ import {
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { StatusBadge } from './StatusBadge';
-import { Backtest } from './Backtest';
 import {
   useBot, useBotTrades, useStartBot, useStopBot,
   usePauseBot, useResumeBot, useDeleteBot,
 } from '@/hooks/useBots';
 import { formatPrice, formatTimeShort } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { useAppStore } from '@/store/app';
 import type { BotStatus, Trade, Position } from '@/types/api';
+import type { Interval } from '@/store/app';
 
 export function BotDetail({
   botId,
@@ -40,9 +40,17 @@ export function BotDetail({
   const pause = usePauseBot();
   const resume = useResumeBot();
   const del = useDeleteBot();
+  const setSymbol = useAppStore((s) => s.setSymbol);
+  const setInterval = useAppStore((s) => s.setInterval);
 
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [showBacktest, setShowBacktest] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!snap) return;
+    setSymbol(snap.config.symbol);
+    setInterval(snap.config.interval as Interval);
+  }, [snap?.config.symbol, snap?.config.interval, setInterval, setSymbol]);
 
   if (isLoading || !snap) {
     return (
@@ -70,6 +78,17 @@ export function BotDetail({
     }
     await del.mutateAsync(botId);
     onBack();
+  };
+
+  const runAction = async (
+    action: typeof start | typeof stop | typeof pause | typeof resume
+  ): Promise<void> => {
+    setActionError(null);
+    try {
+      await action.mutateAsync(botId);
+    } catch (err) {
+      setActionError((err as Error).message);
+    }
   };
 
   const busy = start.isPending || stop.isPending || pause.isPending || resume.isPending;
@@ -103,7 +122,7 @@ export function BotDetail({
               <Button
                 size="sm"
                 variant="bull"
-                onClick={() => start.mutate(botId)}
+                onClick={() => void runAction(start)}
                 disabled={busy}
                 className="flex-1"
               >
@@ -115,7 +134,7 @@ export function BotDetail({
               <Button
                 size="sm"
                 variant="default"
-                onClick={() => pause.mutate(botId)}
+                onClick={() => void runAction(pause)}
                 disabled={busy}
                 className="flex-1"
               >
@@ -127,7 +146,7 @@ export function BotDetail({
               <Button
                 size="sm"
                 variant="bull"
-                onClick={() => resume.mutate(botId)}
+                onClick={() => void runAction(resume)}
                 disabled={busy}
                 className="flex-1"
               >
@@ -139,7 +158,7 @@ export function BotDetail({
               <Button
                 size="sm"
                 variant="danger"
-                onClick={() => stop.mutate(botId)}
+                onClick={() => void runAction(stop)}
                 disabled={busy}
                 className="flex-1"
               >
@@ -148,6 +167,19 @@ export function BotDetail({
               </Button>
             )}
           </div>
+
+          {busy && (
+            <div className="rounded bg-accent/10 border border-accent/30 px-2 py-1.5 text-xs text-text flex items-center gap-2">
+              <Loader2 size={13} className="animate-spin" />
+              Islem yapiliyor...
+            </div>
+          )}
+
+          {actionError && (
+            <div className="rounded bg-bear/10 border border-bear/30 px-2 py-1.5 text-xs text-bear">
+              Hata: {actionError}
+            </div>
+          )}
 
           {cfg.lastError && (
             <div className="rounded bg-bear/10 border border-bear/30 px-2 py-1.5 text-xs text-bear">
@@ -166,6 +198,7 @@ export function BotDetail({
             <Stat label="Toplam PnL" value={st.realizedPnlUsd} kind="pnl" />
             <Stat label="Sermaye" value={cfg.capitalUsd} kind="usd" />
             <Stat label="Maks Pozisyon" value={cfg.risk.maxPositionUsd} kind="usd" />
+            <Stat label="Kaldirac" value={cfg.risk.leverage ?? 1} kind="multiplier" />
             <Stat label="SL %" value={cfg.risk.maxLossPct} kind="pct" />
             <Stat label="TP %" value={cfg.risk.takeProfitPct} kind="pct" />
           </div>
@@ -200,22 +233,6 @@ export function BotDetail({
               {st.lastTickAt ? formatTimeShort(st.lastTickAt) : '—'}
             </span>
           </div>
-        </div>
-
-        {/* Backtest */}
-        <div className="border-b border-border">
-          <button
-            onClick={() => setShowBacktest((v) => !v)}
-            className="w-full px-3 py-2 flex items-center justify-between text-2xs uppercase tracking-wider text-muted hover:bg-surface-2 transition-colors"
-          >
-            <span>Backtest</span>
-            <span className="text-text">{showBacktest ? '−' : '+'}</span>
-          </button>
-          {showBacktest && (
-            <div className="p-3 pt-0">
-              <Backtest bot={cfg} />
-            </div>
-          )}
         </div>
 
         {/* Trade history */}
@@ -290,7 +307,7 @@ function Stat({
 }: {
   label: string;
   value: number;
-  kind: 'pnl' | 'usd' | 'pct' | 'price' | 'qty';
+  kind: 'pnl' | 'usd' | 'pct' | 'price' | 'qty' | 'multiplier';
   small?: boolean;
   variant?: 'bull' | 'bear';
 }): JSX.Element {
@@ -301,6 +318,8 @@ function Stat({
         ? `$${formatPrice(value)}`
         : kind === 'pct'
           ? `${value}%`
+          : kind === 'multiplier'
+            ? `${value}x`
           : kind === 'price'
             ? `$${formatPrice(value)}`
             : value.toFixed(6);

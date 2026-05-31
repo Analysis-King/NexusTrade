@@ -104,8 +104,7 @@ devRouter.post(
           .enum(['1m', '5m', '15m', '30m', '1h', '4h', '1d'])
           .default('1h'),
         days: z.coerce.number().int().min(1).max(90).default(7),
-        min_quality: z.coerce.number().int().min(0).max(100).default(40),
-        tp_mode: z.string().default('TP2'),
+        params: z.record(z.unknown()).default({}),
       })
       .parse(req.body);
 
@@ -119,8 +118,11 @@ devRouter.post(
 
     const data = await getWorkerPool().backtest(body.instance, {
       candles,
-      min_quality: body.min_quality,
-      tp_mode: body.tp_mode,
+      initial_capital: 1000,
+      fee_bps: 10,
+      slippage_bps: 2,
+      fill_model: 'pessimistic_ohlc',
+      params: body.params,
     });
 
     res.json({ ok: true, data });

@@ -5,6 +5,7 @@
  */
 
 import type { BotConfig, Trade } from '../types/domain.js';
+import type { BacktestRun, BacktestStatus } from '../types/backtest.js';
 
 export interface BotStore {
   list(): Promise<BotConfig[]>;
@@ -20,4 +21,12 @@ export interface TradeStore {
   add(trade: Trade): Promise<Trade>;
   /** Aynı clientOrderId ile gönderildiyse mevcudunu döner (idempotency). */
   findByClientOrderId(clientOrderId: string): Promise<Trade | null>;
+}
+
+export interface BacktestStore {
+  list(opts?: { limit?: number; status?: BacktestStatus; symbol?: string; strategyFile?: string }): Promise<BacktestRun[]>;
+  get(id: string): Promise<BacktestRun | null>;
+  create(run: BacktestRun): Promise<BacktestRun>;
+  update(id: string, patch: Partial<BacktestRun>): Promise<BacktestRun>;
+  delete(id: string): Promise<void>;
 }

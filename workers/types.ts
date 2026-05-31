@@ -10,6 +10,7 @@ export interface PortfolioState {
   usdt: number;
   has_position: boolean;
   pnl: number;
+  side?: 'BUY' | 'SELL';
 }
 
 export interface CandleRaw {
@@ -34,12 +35,23 @@ export interface TickResponse {
   signal: Signal;
   sl_pct: number | null;
   tp_pct: number | null;
+  sl_price?: number | null;
+  tp_price?: number | null;
+  observations?: unknown[];
   drawings: unknown[];
 }
 
 export interface LoadRequest {
   instance: string;
   strategy_file: string;
+  params?: Record<string, unknown>;
+}
+
+export interface LoadCodeRequest {
+  instance: string;
+  strategy_file: string;
+  source_code: string;
+  params?: Record<string, unknown>;
 }
 
 export interface LoadResponse {
@@ -50,8 +62,11 @@ export interface LoadResponse {
 export interface BacktestRequest {
   instance: string;
   candles: CandleRaw[];
-  min_quality?: number;
-  tp_mode?: string;
+  initial_capital?: number;
+  fee_bps?: number;
+  slippage_bps?: number;
+  fill_model?: 'close_next_open' | 'pessimistic_ohlc';
+  params?: Record<string, unknown>;
 }
 
 export type BacktestResponse = Record<string, unknown>;

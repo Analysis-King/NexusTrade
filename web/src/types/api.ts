@@ -15,6 +15,7 @@ export type OrderType = 'MARKET' | 'LIMIT' | 'STOP_LOSS' | 'TAKE_PROFIT' | 'STOP
 export type BotStatus = 'idle' | 'running' | 'paused' | 'error' | 'stopped';
 export type BotMode = 'paper' | 'live';
 export type Signal = 'buy' | 'sell' | 'hold';
+export type StopLossMode = 'percent' | 'target_ratio' | 'strategy';
 
 export interface Candle {
   openTime: number;
@@ -31,6 +32,9 @@ export interface BotRiskConfig {
   takeProfitPct: number;
   maxPositionUsd: number;
   dailyMaxLossUsd: number;
+  stopLossMode?: StopLossMode;
+  stopLossTargetRatio?: number;
+  leverage?: number;
 }
 
 export interface BotConfig {
@@ -61,6 +65,46 @@ export interface Position {
   openedAt: number;
 }
 
+export interface DrawingPoint {
+  time: number;
+  price?: number;
+  value?: number;
+}
+
+export type StrategyDrawing =
+  | {
+      type: 'plot';
+      title?: string;
+      points: DrawingPoint[];
+      color?: string;
+      linewidth?: number;
+      style?: string;
+      linestyle?: string;
+      group?: string;
+      force_overlay?: boolean;
+    }
+  | {
+      type: 'line';
+      first: DrawingPoint;
+      second: DrawingPoint;
+      color?: string;
+      style?: string;
+      width?: number;
+      group?: string;
+      force_overlay?: boolean;
+    }
+  | {
+      type: 'label';
+      point: DrawingPoint;
+      text?: string;
+      color?: string;
+      textcolor?: string;
+      style?: string;
+      size?: string;
+      group?: string;
+      force_overlay?: boolean;
+    };
+
 export interface Trade {
   id: string;
   botId: string;
@@ -71,6 +115,8 @@ export interface Trade {
   price: number;
   feeUsd: number;
   pnlUsd?: number;
+  stopLossPrice?: number;
+  takeProfitPrice?: number;
   mode: BotMode;
   exchangeOrderId?: string;
   clientOrderId: string;
@@ -86,6 +132,7 @@ export interface BotSnapshot {
     candleCount: number;
     lastTickAt: number | null;
     lastSignal: Signal | null;
+    drawings: StrategyDrawing[];
   };
 }
 

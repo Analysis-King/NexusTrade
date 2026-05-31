@@ -48,11 +48,67 @@ export interface CreateBotInput {
     takeProfitPct: number;
     maxPositionUsd: number;
     dailyMaxLossUsd: number;
+    stopLossMode: 'percent' | 'target_ratio' | 'strategy';
+    stopLossTargetRatio: number;
+    leverage: number;
   }>;
+}
+
+export interface ProfileGateDraft {
+  profile: string;
+  weightPct: number;
+  expectedDailyPct: number | null;
+  bot: CreateBotInput;
+}
+
+export interface ProfileGateStatus {
+  source: string;
+  generatedAt: string | null;
+  allocation: {
+    strategy: string;
+    plan: string;
+    leverage?: number | null;
+    max_position_pct?: number | null;
+    expectedDailyPct?: number | null;
+    walkForwardAvgDailyPct?: number | null;
+    walkForwardMedianDailyPct?: number | null;
+    walkForwardWorstDailyPct?: number | null;
+    profiles: Array<{
+      symbol: string;
+      interval: Interval;
+      capital_weight_pct: number;
+      latest_daily_pct?: number | null;
+    }>;
+  };
+  drafts: ProfileGateDraft[];
+}
+
+export interface DeployProfileGateInput {
+  capitalUsd?: number;
+  mode?: 'paper' | 'live';
+  prefix?: string;
+  maxLossPct?: number;
+  takeProfitPct?: number;
+  dailyMaxLossPct?: number;
+  stopLossMode?: 'percent' | 'target_ratio' | 'strategy';
+  stopLossTargetRatio?: number;
+  leverage?: number;
+  start?: boolean;
+}
+
+export interface ProfileGateDeployResult {
+  gate: ProfileGateStatus;
+  drafts: ProfileGateDraft[];
+  created: Array<{ profile: string; bot: BotConfig }>;
+  skipped: Array<{ profile: string; reason: 'exists'; bot: BotConfig }>;
+  started: boolean;
 }
 
 export const botsApi = {
   list:    () => api.get<BotConfig[]>('/bots'),
+  profileGate: () => api.get<ProfileGateStatus>('/bots/profile-gate'),
+  deployProfileGate: (input: DeployProfileGateInput) =>
+    api.post<ProfileGateDeployResult>('/bots/profile-gate/deploy', input),
   get:     (id: string) => api.get<BotSnapshot>(`/bots/${id}`),
   create:  (input: CreateBotInput) => api.post<BotConfig>('/bots', input),
   update:  (id: string, patch: Partial<CreateBotInput>) =>
@@ -75,19 +131,231 @@ export interface StrategyMeta {
   author: string;
 }
 
+export interface StrategyFull extends StrategyMeta {
+  code: string;
+}
+
+export interface StrategyValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  capabilities: {
+    initialize: boolean;
+    on_candle: boolean;
+    draw: boolean;
+  };
+}
+
 export const strategiesApi = {
   list: () => api.get<StrategyMeta[]>('/strategies'),
+  get: (filename: string) => api.get<StrategyFull>(`/strategies/${encodeURIComponent(filename)}`),
+  save: (filename: string, code: string) => api.post<StrategyMeta>('/strategies', { filename, code }),
+  validate: (filename: string, code: string) =>
+    api.post<StrategyValidation>('/strategies/validate', { filename, code }),
+};
+
+export interface IndicatorMeta {
+  filename: string;
+  id: string;
+  name: string;
+  desc: string;
+  author: string;
+  category: string;
+  drawable: boolean;
+}
+
+export interface IndicatorDrawResult {
+  drawings: unknown[];
+}
+
+export const indicatorsApi = {
+  list: () => api.get<IndicatorMeta[]>('/indicators'),
+  draw: (filename: string, input: { candles: Candle[]; params?: Record<string, unknown> }) =>
+    api.post<IndicatorDrawResult>(`/indicators/${encodeURIComponent(filename)}/draw`, input),
 };
 
 /* ─── Dev (backtest, geçici) ───────────────────────────── */
+
+export interface CreateBacktestInput {
+  strategyFile: string;
+  code?: string;
+  symbol: string;
+  interval: Interval;
+  startTime?: number;
+  endTime?: number;
+  days?: number;
+  initialCapital: number;
+  feeBps: number;
+  slippageBps: number;
+  fillModel: 'close_next_open' | 'pessimistic_ohlc';
+  params?: Record<string, unknown>;
+  async?: boolean;
+}
+
+export interface BacktestSummary {
+  initialCapital: number;
+  finalCapital: number;
+  totalReturnPct: number;
+  maxDrawdownPct: number;
+  winRatePct: number;
+  profitFactor: number | null;
+  sharpe: number | null;
+  totalTrades: number;
+  avgTradePct: number | null;
+  bestTradePct: number | null;
+  worstTradePct: number | null;
+}
+
+export interface PatternStat {
+  pattern: string;
+  trades: number;
+  winRatePct: number;
+  profitFactor: number | null;
+  totalReturnPct: number;
+  maxDrawdownPct: number | null;
+}
+
+export interface ObservationStat {
+  name: string;
+  side: 'long' | 'short';
+  count: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  avgReturnPct: number;
+  bestReturnPct: number | null;
+  worstReturnPct: number | null;
+  tpFirst: number;
+  slFirst: number;
+  horizon: number;
+}
+
+export interface ObservationEvent {
+  id: string;
+  name: string;
+  side: 'long' | 'short';
+  signalTime: number;
+  entryTime: number;
+  entryPrice: number;
+  exitTime: number;
+  exitPrice: number;
+  returnPct: number;
+  success: boolean;
+  reason: 'tp' | 'sl' | 'horizon' | 'end_of_data';
+  horizonBars: number;
+  meta?: Record<string, unknown>;
+}
+
+export interface BacktestTrade {
+  id: string;
+  side: 'long' | 'short';
+  entryTime: number;
+  entryPrice: number;
+  slPrice?: number | null;
+  tpPrice?: number | null;
+  exitTime: number;
+  exitPrice: number;
+  qty: number;
+  notional?: number;
+  grossPnl: number;
+  netPnl: number;
+  pnlPct: number;
+  accountReturnPct?: number;
+  feePaid: number;
+  reason: 'tp' | 'sl' | 'signal' | 'timeout' | 'end_of_test';
+  meta?: Record<string, unknown>;
+}
+
+export interface PeriodReport {
+  period: number;
+  startTime: number;
+  endTime: number;
+  startEquity: number;
+  endEquity: number;
+  pnl: number;
+  returnPct: number;
+  realizedPnl: number;
+  realizedReturnPct: number;
+  openPnl: number;
+  openReturnPct: number;
+  feePaid: number;
+  trades: number;
+  tpTrades: number;
+  slTrades: number;
+  signalTrades: number;
+  endTrades: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  profitFactor: number | null;
+  maxDrawdownPct: number;
+}
+
+export type BacktestProgressStage =
+  | 'queued'
+  | 'fetching_data'
+  | 'loading_worker'
+  | 'running_strategy'
+  | 'finalizing'
+  | 'completed'
+  | 'failed';
+
+export interface BacktestProgress {
+  stage: BacktestProgressStage;
+  pct: number;
+  message: string;
+  startedAt: number;
+  updatedAt: number;
+  candlesFetched?: number;
+  estimatedCandles?: number;
+  candleCount?: number;
+}
+
+export interface BacktestRun {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  strategyFile: string;
+  strategyHash: string;
+  symbol: string;
+  interval: Interval;
+  startTime: number;
+  endTime: number;
+  candleCount: number;
+  initialCapital: number;
+  params: Record<string, unknown>;
+  assumptions: {
+    feeBps: number;
+    slippageBps: number;
+    fillModel: 'close_next_open' | 'pessimistic_ohlc';
+    sameCandleTpSl: 'stop_first' | 'take_profit_first';
+  };
+  progress?: BacktestProgress;
+  summary?: BacktestSummary;
+  patterns?: PatternStat[];
+  observationStats?: ObservationStat[];
+  observations?: ObservationEvent[];
+  periodReports?: PeriodReport[];
+  trades?: BacktestTrade[];
+  equity?: Array<{ t: number; value: number }>;
+  raw?: Record<string, unknown>;
+  error?: string;
+}
+
+export const backtestsApi = {
+  list: (limit = 20) => api.get<BacktestRun[]>(`/backtests?limit=${limit}`),
+  get: (id: string) => api.get<BacktestRun>(`/backtests/${id}`),
+  create: (input: CreateBacktestInput) => api.post<BacktestRun>('/backtests', input),
+  delete: (id: string) => api.delete<void>(`/backtests/${id}`),
+};
 
 export interface BacktestParams {
   instance: string;
   symbol: string;
   interval: Interval;
   days?: number;
-  min_quality?: number;
-  tp_mode?: string;
+  params?: Record<string, unknown>;
 }
 
 export interface BacktestResult {

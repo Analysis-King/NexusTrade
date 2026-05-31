@@ -198,7 +198,20 @@ export class BinanceStreamManager extends EventEmitter {
     }
     if (this.ws) {
       this.ws.removeAllListeners();
-      this.ws.terminate();
+      // Hata fırlatabilir; özellikle henüz CONNECTING durumundaysa terminate()
+      // "WebSocket was closed before the connection was established" atar.
+      // close() bu durumda daha güvenli; emin olmak için ikisini de try-catch'e al.
+      try {
+        const state = this.ws.readyState;
+        if (state === WebSocket.OPEN || state === WebSocket.CLOSING) {
+          this.ws.terminate();
+        } else {
+          // CONNECTING veya CLOSED — close çağırarak listener temizliği yapılır
+          this.ws.close();
+        }
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, 'WS terminate/close hata');
+      }
       this.ws = null;
     }
     this.cleanup();

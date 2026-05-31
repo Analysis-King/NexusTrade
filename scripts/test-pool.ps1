@@ -1,4 +1,9 @@
 # NexusTrade pool test betigi
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$StrategyFile
+)
+
 $base = 'http://localhost:3000/api/dev/pool'
 $instanceId = 'test-bot-1'
 
@@ -6,7 +11,7 @@ Write-Host "`n[1] Pool stats:" -ForegroundColor Cyan
 Invoke-RestMethod "$base/stats" | ConvertTo-Json -Depth 10
 
 Write-Host "`n[2] Strateji yukle:" -ForegroundColor Cyan
-$body = @{ instance = $instanceId; strategy_file = 'rsi_mean_reversion.py' } | ConvertTo-Json
+$body = @{ instance = $instanceId; strategy_file = $StrategyFile; params = @{} } | ConvertTo-Json
 Invoke-RestMethod -Uri "$base/load" -Method POST -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 10
 
 Write-Host "`n[3] Tick (BTCUSDT 1h):" -ForegroundColor Cyan

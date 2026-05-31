@@ -103,7 +103,30 @@ async function main(): Promise<void> {
     log.error({ reason }, 'Unhandled promise rejection');
   });
 
+  /**
+   * uncaughtException politikası:
+   *
+   * Bilinen "iyiniyet" kaynaklı runtime hatalar (örn. ws kütüphanesi'nin
+   * connecting durumdayken terminate edilmesi) FATAL değildir. Bunları
+   * whitelist'e alıp loglayıp devam ediyoruz.
+   *
+   * Bilinmeyen hatalar gerçek state corruption işareti olabilir → exit.
+   */
+  const isRecoverable = (err: Error): boolean => {
+    const msg = err?.message ?? '';
+    return (
+      msg.includes('WebSocket was closed before') ||
+      msg.includes('Opening handshake has timed out') ||
+      msg.includes('ECONNRESET') ||
+      msg.includes('ECONNREFUSED')
+    );
+  };
+
   process.on('uncaughtException', (err) => {
+    if (isRecoverable(err)) {
+      log.warn({ err: err.message }, 'Recoverable runtime error — devam ediliyor');
+      return;
+    }
     log.fatal({ err }, 'Uncaught exception - kapatiliyor');
     setTimeout(() => process.exit(1), 500).unref();
   });

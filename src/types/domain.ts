@@ -38,6 +38,7 @@ export interface SymbolFilters {
 
 export type BotStatus = 'idle' | 'running' | 'paused' | 'error' | 'stopped';
 export type BotMode = 'paper' | 'live';
+export type StopLossMode = 'percent' | 'target_ratio' | 'strategy';
 
 export interface BotRiskConfig {
   /** Yüzde olarak (örn. 2 = %2) — bot başına. */
@@ -48,6 +49,12 @@ export interface BotRiskConfig {
   maxPositionUsd: number;
   /** USDT cinsinden — günlük zarar limiti, aşılırsa bot durur. */
   dailyMaxLossUsd: number;
+  /** Evrensel SL modeli: yuzde, TP mesafesi orani, veya stratejinin verdigi seviye. */
+  stopLossMode?: StopLossMode;
+  /** stopLossMode target_ratio ise TP mesafesinin kac kati risk alinacak. */
+  stopLossTargetRatio?: number;
+  /** Evrensel kaldirac/notional carpani. Paper modda pozisyon buyuklugunu olceklendirir. */
+  leverage?: number;
 }
 
 export interface BotConfig {
@@ -82,6 +89,8 @@ export interface Trade {
   price: number;
   feeUsd: number;
   pnlUsd?: number;
+  stopLossPrice?: number;
+  takeProfitPrice?: number;
   mode: BotMode;
   /** Binance'de ilgili order ID (live modda). */
   exchangeOrderId?: string;
@@ -102,6 +111,46 @@ export interface Position {
   takeProfitPrice?: number;
   openedAt: number;
 }
+
+export interface DrawingPoint {
+  time: number;
+  price?: number;
+  value?: number;
+}
+
+export type StrategyDrawing =
+  | {
+      type: 'plot';
+      title?: string;
+      points: DrawingPoint[];
+      color?: string;
+      linewidth?: number;
+      style?: string;
+      linestyle?: string;
+      group?: string;
+      force_overlay?: boolean;
+    }
+  | {
+      type: 'line';
+      first: DrawingPoint;
+      second: DrawingPoint;
+      color?: string;
+      style?: string;
+      width?: number;
+      group?: string;
+      force_overlay?: boolean;
+    }
+  | {
+      type: 'label';
+      point: DrawingPoint;
+      text?: string;
+      color?: string;
+      textcolor?: string;
+      style?: string;
+      size?: string;
+      group?: string;
+      force_overlay?: boolean;
+    };
 
 /* ─── Strateji & İndikatör ─────────────────────────────────── */
 

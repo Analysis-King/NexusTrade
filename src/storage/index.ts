@@ -8,11 +8,13 @@
 import { env } from '../config/env.js';
 import { JsonBotStore } from './json/botStore.js';
 import { JsonTradeStore } from './json/tradeStore.js';
-import type { BotStore, TradeStore } from './types.js';
+import { JsonBacktestStore } from './json/backtestStore.js';
+import type { BacktestStore, BotStore, TradeStore } from './types.js';
 
 export interface Storage {
   bots: BotStore;
   trades: TradeStore;
+  backtests: BacktestStore;
 }
 
 let instance: Storage | null = null;
@@ -23,6 +25,7 @@ export function getStorage(): Storage {
     instance = {
       bots: new JsonBotStore(dataDir),
       trades: new JsonTradeStore(dataDir),
+      backtests: new JsonBacktestStore(dataDir),
     };
   }
   return instance;

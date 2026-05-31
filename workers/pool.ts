@@ -9,7 +9,7 @@
  * Kullanım:
  *   const pool = new WorkerPool();
  *   await pool.start();
- *   const config = await pool.load(botId, 'rsi_mean_reversion.py');
+ *   const config = await pool.load(botId, strategyFile, params);
  *   const sig = await pool.tick(botId, { candle, candles, portfolio });
  *   await pool.drop(botId);
  *   await pool.shutdown();
@@ -39,6 +39,7 @@ export interface WorkerPoolOptions {
 interface InstanceMeta {
   workerIdx: number;
   strategyFile: string;
+  params: Record<string, unknown>;
 }
 
 export class WorkerPool {
@@ -84,7 +85,7 @@ export class WorkerPool {
 
   /* ─── Bot operasyonları ────────────────────────────────── */
 
-  async load(instanceId: string, strategyFile: string): Promise<LoadResponse> {
+  async load(instanceId: string, strategyFile: string, params: Record<string, unknown> = {}): Promise<LoadResponse> {
     if (this.instanceMap.has(instanceId)) {
       // Zaten yüklü — drop & yeniden yükle
       await this.drop(instanceId).catch(() => undefined);
@@ -96,8 +97,9 @@ export class WorkerPool {
       const data = await worker.request<LoadResponse>('load', {
         instance: instanceId,
         strategy_file: strategyFile,
+        params,
       });
-      this.instanceMap.set(instanceId, { workerIdx: idx, strategyFile });
+      this.instanceMap.set(instanceId, { workerIdx: idx, strategyFile, params });
       worker.loadedInstances.add(instanceId);
       return data;
     } catch (err) {
@@ -193,6 +195,7 @@ export class WorkerPool {
             ?.request('load', {
               instance: instId,
               strategy_file: meta.strategyFile,
+              params: meta.params,
             })
             .then(() => {
               this.workers[idx]?.loadedInstances.add(instId);

@@ -10,7 +10,7 @@
  * günceller (veya yeni bir tane ekler).
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createChart,
   ColorType,
@@ -24,11 +24,12 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { useQuery } from '@tanstack/react-query';
-import { marketApi } from '@/api/endpoints';
+import { indicatorsApi, marketApi } from '@/api/endpoints';
 import { ws } from '@/api/ws';
-import { useAppStore } from '@/store/app';
+import { useAppStore, type DrawingMode } from '@/store/app';
+import { useBot } from '@/hooks/useBots';
 import { closesOf, computeEMA, computeRSI } from '@/lib/indicators';
-import type { Candle } from '@/types/api';
+import type { Candle, DrawingPoint, StrategyDrawing } from '@/types/api';
 
 /** Tema renkleri — globals.css değerleriyle senkron tutulmalı. */
 const C = {
@@ -64,9 +65,115 @@ function toVolumeData(c: Candle): HistogramData {
   };
 }
 
+type OverlayElement =
+  | {
+      kind: 'polyline';
+      id: string;
+      points: string;
+      color: string;
+      width: number;
+      dash?: string;
+    }
+  | {
+      kind: 'line';
+      id: string;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      color: string;
+      width: number;
+      dash?: string;
+    }
+  | {
+      kind: 'label';
+      id: string;
+      x: number;
+      y: number;
+      text: string;
+      color: string;
+      textColor: string;
+      isUp: boolean;
+      stackIndex: number;
+    };
+
+function toChartTime(raw: number): UTCTimestamp {
+  return Math.floor(raw > 1_000_000_000_000 ? raw / 1000 : raw) as UTCTimestamp;
+}
+
+function pointValue(point: DrawingPoint): number | null {
+  const raw = point.price ?? point.value;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+}
+
+function clampOverlayX(x: number, width: number): number {
+  if (!Number.isFinite(x) || width <= 0) return x;
+  return Math.max(8, Math.min(width - 72, x));
+}
+
+function widthOf(raw: unknown, fallback = 1): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(6, Math.round(n)));
+}
+
+function dashOf(style?: string): string | undefined {
+  const value = String(style ?? '').toLowerCase();
+  if (value.includes('dot')) return '2 4';
+  if (value.includes('dash')) return '7 5';
+  return undefined;
+}
+
 export function Chart(): JSX.Element {
   const symbol = useAppStore((s) => s.symbol);
   const interval = useAppStore((s) => s.interval);
+  const selectedBotId = useAppStore((s) => s.selectedBotId);
+  const drawingMode = useAppStore((s) => s.drawingMode);
+  const activeIndicatorIds = useAppStore((s) => s.activeIndicatorIds);
+  const setDrawingMode = useAppStore((s) => s.setDrawingMode);
+  const { data: selectedBot } = useBot(selectedBotId);
+  const selectedDrawings =
+    selectedBot?.config.symbol === symbol && selectedBot.config.interval === interval
+      ? selectedBot.state.drawings
+      : undefined;
+  const { data: candles } = useQuery({
+    queryKey: ['klines', symbol, interval],
+    queryFn: () => marketApi.klines(symbol, interval, 500),
+    staleTime: 30_000,
+  });
+  const activeIndicatorKey = activeIndicatorIds.join('|');
+  const indicatorDrawings = useQuery({
+    queryKey: ['indicator-drawings', symbol, interval, activeIndicatorKey, candles?.at(-1)?.openTime],
+    queryFn: async () => {
+      if (!candles?.length) return [];
+      const results = await Promise.all(
+        activeIndicatorIds.map((id) =>
+          indicatorsApi
+            .draw(`${id}.py`, { candles })
+            .then((result) => result.drawings)
+            .catch(() => [])
+        )
+      );
+      return results.flat() as StrategyDrawing[];
+    },
+    enabled: Boolean(candles?.length && activeIndicatorIds.length > 0),
+    staleTime: 10_000,
+  });
+  const visibleDrawings = useMemo(() => {
+    if (drawingMode === 'hidden') return [];
+    const botDrawings = selectedDrawings ?? [];
+    const activeIndicatorDrawings = activeIndicatorIds.length ? indicatorDrawings.data ?? [] : [];
+    if (drawingMode === 'all') return [...activeIndicatorDrawings, ...botDrawings];
+    const firstGrouped = botDrawings.find((drawing) => typeof drawing.group === 'string' && drawing.group);
+    if (firstGrouped?.group) {
+      return [
+        ...activeIndicatorDrawings,
+        ...botDrawings.filter((drawing) => drawing.group === firstGrouped.group),
+      ];
+    }
+    return [...activeIndicatorDrawings, ...botDrawings.slice(-10)];
+  }, [activeIndicatorIds.length, drawingMode, indicatorDrawings.data, selectedDrawings]);
+  const [overlayElements, setOverlayElements] = useState<OverlayElement[]>([]);
 
   // İki ayrı container — main (mum/volume/ema) ve sub (RSI)
   const mainContainerRef = useRef<HTMLDivElement>(null);
@@ -82,6 +189,140 @@ export function Chart(): JSX.Element {
 
   // Candle buffer — canlı update için lokal kopya tutuyoruz
   const candlesRef = useRef<Candle[]>([]);
+  const drawingsRef = useRef<StrategyDrawing[]>([]);
+  const renderOverlayRef = useRef<() => void>(() => undefined);
+  const overlayFrameRef = useRef<number | null>(null);
+  const scheduleOverlayRenderRef = useRef<() => void>(() => undefined);
+
+  renderOverlayRef.current = () => {
+    const chart = mainChartRef.current;
+    const series = candleSeriesRef.current;
+    if (!chart || !series) {
+      setOverlayElements([]);
+      return;
+    }
+
+    const timeScale = chart.timeScale() as {
+      timeToCoordinate: (time: UTCTimestamp) => number | null;
+    };
+    const timeToX = (rawTime: number): number | null => {
+      const chartTime = toChartTime(rawTime);
+      const direct = timeScale.timeToCoordinate(chartTime);
+      const width = mainContainerRef.current?.clientWidth ?? 0;
+      if (direct !== null) return clampOverlayX(Number(direct), width);
+
+      const candles = candlesRef.current;
+      if (candles.length < 2 || width <= 0) return null;
+
+      const pointSec = Number(chartTime);
+      const first = candles[0]!;
+      const second = candles[1]!;
+      const prev = candles[candles.length - 2]!;
+      const last = candles[candles.length - 1]!;
+      const firstSec = Number(toChartTime(first.openTime));
+      const secondSec = Number(toChartTime(second.openTime));
+      const prevSec = Number(toChartTime(prev.openTime));
+      const lastSec = Number(toChartTime(last.openTime));
+
+      const afterLast = pointSec > lastSec;
+      const beforeFirst = pointSec < firstSec;
+      if (!afterLast && !beforeFirst) return null;
+
+      const anchorTime = afterLast ? lastSec : firstSec;
+      const neighborTime = afterLast ? prevSec : secondSec;
+      const anchorX = timeScale.timeToCoordinate((afterLast ? lastSec : firstSec) as UTCTimestamp);
+      const neighborX = timeScale.timeToCoordinate((afterLast ? prevSec : secondSec) as UTCTimestamp);
+      if (anchorX === null || neighborX === null || anchorTime === neighborTime) return null;
+
+      const pxPerSecond = (Number(anchorX) - Number(neighborX)) / (anchorTime - neighborTime);
+      if (!Number.isFinite(pxPerSecond) || pxPerSecond === 0) return null;
+
+      const extrapolated = Number(anchorX) + (pointSec - anchorTime) * pxPerSecond;
+      return clampOverlayX(extrapolated, width);
+    };
+    const toCoord = (point: DrawingPoint): { x: number; y: number } | null => {
+      const value = pointValue(point);
+      if (value === null || typeof point.time !== 'number') return null;
+      const x = timeToX(point.time);
+      const y = series.priceToCoordinate(value);
+      if (x === null || y === null) return null;
+      return { x: Number(x), y: Number(y) };
+    };
+
+    const next: OverlayElement[] = [];
+    drawingsRef.current.forEach((drawing, drawingIndex) => {
+      if (!drawing || typeof drawing !== 'object') return;
+      if (drawing.type === 'plot') {
+        const coords = (Array.isArray(drawing.points) ? drawing.points : [])
+          .map(toCoord)
+          .filter((p): p is { x: number; y: number } => Boolean(p));
+        if (coords.length < 2) return;
+        next.push({
+          kind: 'polyline',
+          id: `plot-${drawingIndex}`,
+          points: coords.map((p) => `${p.x},${p.y}`).join(' '),
+          color: drawing.color ?? C.text,
+          width: widthOf(drawing.linewidth, 1),
+          dash: dashOf(drawing.linestyle ?? drawing.style),
+        });
+        return;
+      }
+
+      if (drawing.type === 'line') {
+        const first = toCoord(drawing.first);
+        const second = toCoord(drawing.second);
+        if (!first || !second) return;
+        next.push({
+          kind: 'line',
+          id: `line-${drawingIndex}`,
+          x1: first.x,
+          y1: first.y,
+          x2: second.x,
+          y2: second.y,
+          color: drawing.color ?? C.text,
+          width: widthOf(drawing.width, 1),
+          dash: dashOf(drawing.style),
+        });
+        return;
+      }
+
+      if (drawing.type === 'label') {
+        const point = toCoord(drawing.point);
+        if (!point) return;
+        const stackIndex = next.filter((el) =>
+          el.kind === 'label' &&
+          Math.abs(el.x - point.x) < 90 &&
+          Math.abs(el.y - point.y) < 32 &&
+          el.isUp === !String(drawing.style ?? '').toLowerCase().includes('down')
+        ).length;
+        next.push({
+          kind: 'label',
+          id: `label-${drawingIndex}`,
+          x: point.x,
+          y: point.y,
+          text: drawing.text ?? '',
+          color: drawing.color ?? C.text,
+          textColor: drawing.textcolor ?? C.bg,
+          isUp: !String(drawing.style ?? '').toLowerCase().includes('down'),
+          stackIndex,
+        });
+      }
+    });
+    setOverlayElements(next);
+  };
+
+  scheduleOverlayRenderRef.current = () => {
+    if (overlayFrameRef.current !== null) return;
+    overlayFrameRef.current = window.requestAnimationFrame(() => {
+      overlayFrameRef.current = null;
+      renderOverlayRef.current();
+    });
+  };
+
+  useEffect(() => {
+    drawingsRef.current = visibleDrawings;
+    renderOverlayRef.current();
+  }, [visibleDrawings, symbol, interval]);
 
   /* ─── Chart oluşturma — ilk render ────────────────────── */
   useEffect(() => {
@@ -101,8 +342,8 @@ export function Chart(): JSX.Element {
       },
       crosshair: {
         mode: CrosshairMode.Normal,
-        vertLine: { color: C.muted, width: 1, style: LineStyle.Dashed, labelBackgroundColor: C.surface },
-        horzLine: { color: C.muted, width: 1, style: LineStyle.Dashed, labelBackgroundColor: C.surface },
+        vertLine: { color: C.muted, width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: C.surface },
+        horzLine: { color: C.muted, width: 1 as const, style: LineStyle.Dashed, labelBackgroundColor: C.surface },
       },
       rightPriceScale: { borderColor: C.border },
       timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false },
@@ -169,9 +410,31 @@ export function Chart(): JSX.Element {
     // Time scale senkronu — ana chart'ı kaydırınca alt da kaysın
     mainChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) subChart.timeScale().setVisibleLogicalRange(range);
+      scheduleOverlayRenderRef.current();
     });
     subChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (range) mainChart.timeScale().setVisibleLogicalRange(range);
+      scheduleOverlayRenderRef.current();
+    });
+
+    const scheduleOverlayRender = (): void => {
+      scheduleOverlayRenderRef.current();
+    };
+    const overlaySyncEvents: Array<keyof HTMLElementEventMap> = [
+      'wheel',
+      'pointerdown',
+      'pointermove',
+      'pointerup',
+      'pointercancel',
+      'pointerleave',
+      'mousemove',
+      'touchmove',
+      'touchend',
+      'dblclick',
+    ];
+    const overlaySyncOptions: AddEventListenerOptions = { passive: true };
+    overlaySyncEvents.forEach((eventName) => {
+      main.addEventListener(eventName, scheduleOverlayRender, overlaySyncOptions);
     });
 
     // Resize observer — pencere boyutu değişince
@@ -188,6 +451,7 @@ export function Chart(): JSX.Element {
           height: subContainerRef.current.clientHeight,
         });
       }
+      scheduleOverlayRenderRef.current();
     });
     resizeObserver.observe(main);
     resizeObserver.observe(sub);
@@ -198,8 +462,16 @@ export function Chart(): JSX.Element {
     volumeSeriesRef.current = volume;
     emaSeriesRef.current = ema;
     rsiSeriesRef.current = rsi;
+    renderOverlayRef.current();
 
     return () => {
+      overlaySyncEvents.forEach((eventName) => {
+        main.removeEventListener(eventName, scheduleOverlayRender, overlaySyncOptions);
+      });
+      if (overlayFrameRef.current !== null) {
+        window.cancelAnimationFrame(overlayFrameRef.current);
+        overlayFrameRef.current = null;
+      }
       resizeObserver.disconnect();
       mainChart.remove();
       subChart.remove();
@@ -209,12 +481,6 @@ export function Chart(): JSX.Element {
   }, []);
 
   /* ─── Tarihsel veri yükleme ──────────────────────────── */
-  const { data: candles } = useQuery({
-    queryKey: ['klines', symbol, interval],
-    queryFn: () => marketApi.klines(symbol, interval, 500),
-    staleTime: 30_000,
-  });
-
   // Veriyi chart'a aktar
   useEffect(() => {
     if (!candles || !candleSeriesRef.current || !volumeSeriesRef.current ||
@@ -260,6 +526,7 @@ export function Chart(): JSX.Element {
       ts.fitContent();
       ts.scrollToRealTime();
     }
+    renderOverlayRef.current();
   }, [candles]);
 
   /* ─── Canlı kline akışı ──────────────────────────────── */
@@ -315,6 +582,7 @@ export function Chart(): JSX.Element {
           value: lastRsi,
         });
       }
+      renderOverlayRef.current();
     });
 
     return unsub;
@@ -325,7 +593,70 @@ export function Chart(): JSX.Element {
       {/* Üst: mum + volume + EMA */}
       <div className="flex-1 min-h-0 relative">
         <ChartLabel symbol={symbol} interval={interval} />
+        <DrawingModeControl mode={drawingMode} onChange={setDrawingMode} />
         <div ref={mainContainerRef} className="absolute inset-0" />
+        <svg className="absolute inset-0 z-[5] pointer-events-none" width="100%" height="100%">
+          {overlayElements.map((el) => {
+            if (el.kind === 'polyline') {
+              return (
+                <polyline
+                  key={el.id}
+                  points={el.points}
+                  fill="none"
+                  stroke={el.color}
+                  strokeWidth={el.width}
+                  strokeDasharray={el.dash}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              );
+            }
+            if (el.kind === 'line') {
+              return (
+                <line
+                  key={el.id}
+                  x1={el.x1}
+                  y1={el.y1}
+                  x2={el.x2}
+                  y2={el.y2}
+                  stroke={el.color}
+                  strokeWidth={el.width}
+                  strokeDasharray={el.dash}
+                  strokeLinecap="round"
+                />
+              );
+            }
+            const labelWidth = Math.max(56, Math.min(220, el.text.length * 7 + 18));
+            const labelHeight = 22;
+            const labelX = el.x - labelWidth / 2;
+            const stackOffset = el.stackIndex * (labelHeight + 4);
+            const labelY = el.isUp
+              ? el.y - labelHeight - 8 - stackOffset
+              : el.y + 8 + stackOffset;
+            return (
+              <g key={el.id}>
+                <rect
+                  x={labelX}
+                  y={labelY}
+                  width={labelWidth}
+                  height={labelHeight}
+                  rx={4}
+                  fill={el.color}
+                />
+                <text
+                  x={el.x}
+                  y={labelY + 15}
+                  fill={el.textColor}
+                  textAnchor="middle"
+                  fontSize="11"
+                  fontWeight="700"
+                >
+                  {el.text}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
 
       {/* Alt: RSI */}
@@ -340,6 +671,39 @@ export function Chart(): JSX.Element {
 }
 
 /** Sol üstte sembol + interval + EMA badge. */
+function DrawingModeControl({
+  mode,
+  onChange,
+}: {
+  mode: DrawingMode;
+  onChange: (mode: DrawingMode) => void;
+}): JSX.Element {
+  const options: Array<{ value: DrawingMode; label: string }> = [
+    { value: 'hidden', label: 'Gizle' },
+    { value: 'latest', label: 'Son' },
+    { value: 'all', label: 'Hepsi' },
+  ];
+
+  return (
+    <div className="absolute top-2 right-2 z-10 flex overflow-hidden rounded border border-border bg-bg/80 text-2xs shadow">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          onClick={() => onChange(option.value)}
+          className={`px-2 py-1 transition-colors ${
+            mode === option.value
+              ? 'bg-accent text-white'
+              : 'text-muted hover:bg-surface-2 hover:text-text'
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ChartLabel({ symbol, interval }: { symbol: string; interval: string }): JSX.Element {
   return (
     <div className="absolute top-2 left-2 z-10 flex items-center gap-2 text-xs text-muted select-none pointer-events-none">

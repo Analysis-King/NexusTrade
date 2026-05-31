@@ -6,6 +6,13 @@ __pycache__/
 # Build
 dist/
 build/
+*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+
+# Temporary extraction/work files
+.tmp_*/
+.codex-tmp/
 
 # Environment & secrets — KESİNLİKLE COMMIT EDİLMEZ
 .env

@@ -50,6 +50,7 @@ export interface ExecutionProvider {
 export class PaperExecution implements ExecutionProvider {
   /** Spot trading komisyonu — Binance default %0.1 */
   private readonly feeRate = 0.001;
+  private readonly slippageRate = 0;
 
   async openPosition(
     ctx: ExecutionContext,
@@ -61,6 +62,20 @@ export class PaperExecution implements ExecutionProvider {
 
     const quantity = params.notionalUsd / price;
     const fee = params.notionalUsd * this.feeRate;
+    if (
+      params.takeProfitPrice !== undefined &&
+      expectedTpNetPnl({
+        side: params.side,
+        entryPrice: price,
+        targetPrice: params.takeProfitPrice,
+        quantity,
+        entryFee: fee,
+        feeRate: this.feeRate,
+        slippageRate: this.slippageRate,
+      }) <= 0
+    ) {
+      throw new BotError('TP hedefi komisyon/slippage maliyetini karsilamiyor');
+    }
 
     const trade: Trade = {
       id: randomUUID(),
@@ -71,6 +86,8 @@ export class PaperExecution implements ExecutionProvider {
       quantity,
       price,
       feeUsd: fee,
+      stopLossPrice: params.stopLossPrice,
+      takeProfitPrice: params.takeProfitPrice,
       mode: 'paper',
       clientOrderId: `paper-${randomUUID()}`,
       createdAt: Date.now(),
@@ -156,4 +173,22 @@ export class LiveExecution implements ExecutionProvider {
 export function getExecutionProvider(mode: BotConfig['mode']): ExecutionProvider {
   if (mode === 'live') return new LiveExecution();
   return new PaperExecution();
+}
+
+function expectedTpNetPnl(input: {
+  side: OrderSide;
+  entryPrice: number;
+  targetPrice: number;
+  quantity: number;
+  entryFee: number;
+  feeRate: number;
+  slippageRate: number;
+}): number {
+  const exitPrice =
+    input.targetPrice *
+    (input.side === 'BUY' ? 1 - input.slippageRate : 1 + input.slippageRate);
+  const direction = input.side === 'BUY' ? 1 : -1;
+  const grossPnl = (exitPrice - input.entryPrice) * input.quantity * direction;
+  const exitFee = Math.abs(exitPrice * input.quantity) * input.feeRate;
+  return grossPnl - input.entryFee - exitFee;
 }

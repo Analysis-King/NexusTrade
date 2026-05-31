@@ -49,7 +49,7 @@ export function Modal({ open, onClose, title, children, className }: ModalProps)
             </button>
           </div>
         )}
-        <div className="panel-body p-4">{children}</div>
+        <div className="panel-body overflow-hidden p-4">{children}</div>
       </div>
     </div>
   );

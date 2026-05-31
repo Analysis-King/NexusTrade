@@ -5,13 +5,13 @@ server.js tarafindan spawn edilir.
 stdin'den JSON komutlari alir, stdout'a JSON cevap yazar.
 
 Protokol:
-    server.js -> worker: {"cmd": "init", "strategy_file": "harmonik_tam.py", "config": {...}}
+    server.js -> worker: {"cmd": "init", "strategy_file": "...", "config": {...}}
     worker -> server.js: {"ok": true, "config": {...}}
 
     server.js -> worker: {"cmd": "tick", "candle": {...}, "candles": [...], "portfolio": {...}, "indicators": {...}}
     worker -> server.js: {"signal": "buy"|"sell"|"hold", "sl_pct": 2.0, "tp_pct": 4.0, "drawings": [...]}
 
-    server.js -> worker: {"cmd": "backtest", "candles": [...], "min_quality": 40, "tp_mode": "TP2"}
+    server.js -> worker: {"cmd": "backtest", "candles": [...], "params": {...}}
     worker -> server.js: {"stats": {...}}
 """
 
@@ -109,6 +109,9 @@ class StrategyWorker:
         def sell():
             result['signal'] = 'sell'
 
+        def close():
+            result['signal'] = 'close'
+
         def hold():
             result['signal'] = 'hold'
 
@@ -123,7 +126,7 @@ class StrategyWorker:
         # Global namespace'e inject et
         import builtins
         _orig = {}
-        for name, fn in [('buy', buy), ('sell', sell), ('hold', hold),
+        for name, fn in [('buy', buy), ('sell', sell), ('close', close), ('hold', hold),
                           ('set_sl', set_sl), ('set_tp', set_tp)]:
             _orig[name] = getattr(builtins, name, None)
             setattr(builtins, name, fn)
@@ -182,14 +185,12 @@ class StrategyWorker:
             'drawings': drawings,
         }
 
-    def backtest(self, candles, min_quality=40, tp_mode='TP2'):
-        """run_backtest() varsa cagir."""
-        if not self.module or not hasattr(self.module, 'run_backtest'):
-            return {}
-        try:
-            return self.module.run_backtest(candles, min_quality, tp_mode)
-        except Exception as e:
-            return {'error': str(e)}
+    def backtest(self, candles, params=None):
+        """Legacy worker artik stratejiye ozel backtest metodu cagirmiyor."""
+        return {
+            'error': 'Universal backtest icin pool_worker kullanilmali.',
+            'candles': len(candles or []),
+        }
 
 
 # ── Ana dongu ────────────────────────────────────────────────
@@ -233,8 +234,7 @@ def main():
             elif action == 'backtest':
                 stats = worker.backtest(
                     cmd['candles'],
-                    cmd.get('min_quality', 40),
-                    cmd.get('tp_mode', 'TP2'),
+                    cmd.get('params', {}),
                 )
                 print(json.dumps({'stats': stats}), flush=True)
 

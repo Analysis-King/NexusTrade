@@ -12,7 +12,16 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { BinanceClient } from '../services/binance/client.js';
+import type { BinanceKlineRaw } from '../services/binance/types.js';
 import { klineToCandle } from '../services/binance/marketData.js';
+import {
+  fallbackKlines,
+  fallbackOrderBook,
+  fallbackPrice,
+  fallbackRecentTrades,
+  fallbackSymbols,
+  fallbackTicker24h,
+} from '../services/marketFallback.js';
 import { asyncHandler } from './middleware.js';
 
 export const marketRouter = Router();
@@ -37,7 +46,7 @@ marketRouter.get(
   '/price/:symbol',
   asyncHandler(async (req, res) => {
     const symbol = symbolSchema.parse(req.params.symbol);
-    const data = await publicClient.price(symbol);
+    const data = await publicClient.price(symbol).catch(() => fallbackPrice(symbol));
     res.json({ ok: true, data });
   })
 );
@@ -47,7 +56,7 @@ marketRouter.get(
   '/ticker/:symbol?',
   asyncHandler(async (req, res) => {
     const symbol = req.params.symbol ? symbolSchema.parse(req.params.symbol) : undefined;
-    const data = await publicClient.ticker24h(symbol);
+    const data = await publicClient.ticker24h(symbol).catch(() => fallbackTicker24h(symbol));
     res.json({ ok: true, data });
   })
 );
@@ -58,7 +67,7 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const symbol = symbolSchema.parse(req.params.symbol);
     const limit = z.coerce.number().int().min(5).max(100).default(20).parse(req.query.limit);
-    const data = await publicClient.orderBook(symbol, limit);
+    const data = await publicClient.orderBook(symbol, limit).catch(() => fallbackOrderBook(symbol, limit));
     res.json({ ok: true, data });
   })
 );
@@ -69,7 +78,7 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const symbol = symbolSchema.parse(req.params.symbol);
     const limit = z.coerce.number().int().min(1).max(500).default(50).parse(req.query.limit);
-    const data = await publicClient.recentTrades(symbol, limit);
+    const data = await publicClient.recentTrades(symbol, limit).catch(() => fallbackRecentTrades(symbol, limit));
     res.json({ ok: true, data });
   })
 );
@@ -83,7 +92,23 @@ marketRouter.get(
     const limit = z.coerce.number().int().min(1).max(1000).default(200).parse(req.query.limit);
     const format = z.enum(['raw', 'candle']).default('candle').parse(req.query.format);
 
-    const raw = await publicClient.klines({ symbol, interval, limit });
+    const raw = await publicClient.klines({ symbol, interval, limit }).catch(async () => {
+      const fallback = await fallbackKlines({ symbol, interval, limit });
+      return fallback.map((candle): BinanceKlineRaw => [
+        candle.openTime,
+        String(candle.open),
+        String(candle.high),
+        String(candle.low),
+        String(candle.close),
+        String(candle.volume),
+        candle.closeTime,
+        '0',
+        0,
+        '0',
+        '0',
+        '0',
+      ]);
+    });
 
     if (format === 'raw') {
       res.json({ ok: true, data: raw });
@@ -99,12 +124,16 @@ marketRouter.get(
   '/symbols',
   asyncHandler(async (_req, res) => {
     // Binance'de exchangeInfo çok büyük döner; bu helper basit bir filtre yapar.
-    const all = (await publicClient.ticker24h()) as Array<{ symbol: string; quoteVolume: string }>;
-    const usdtPairs = all
-      .filter((t) => t.symbol.endsWith('USDT'))
-      .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-      .slice(0, 100)
-      .map((t) => t.symbol);
+    const usdtPairs = await publicClient
+      .ticker24h()
+      .then((all) =>
+        (all as Array<{ symbol: string; quoteVolume: string }>)
+          .filter((t) => t.symbol.endsWith('USDT'))
+          .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+          .slice(0, 100)
+          .map((t) => t.symbol)
+      )
+      .catch(() => fallbackSymbols());
 
     res.json({ ok: true, data: usdtPairs });
   })

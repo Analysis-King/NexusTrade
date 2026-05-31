@@ -13,7 +13,8 @@ import { EventEmitter } from 'node:events';
 import { ConflictError, NotFoundError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 import type { Storage } from '../storage/index.js';
-import type { BotConfig, BotMode, BotRiskConfig, Interval } from '../types/domain.js';
+import type { BotConfig, BotMode, BotRiskConfig, Interval, Position, Trade } from '../types/domain.js';
+import type { Signal } from '../workers/types.js';
 import { BotRunner } from './runner.js';
 
 const log = createLogger('bot-manager');
@@ -29,11 +30,18 @@ export interface CreateBotInput {
   risk?: Partial<BotRiskConfig>;
 }
 
+export type UpdateBotInput = Omit<Partial<BotConfig>, 'risk'> & {
+  risk?: Partial<BotRiskConfig>;
+};
+
 const DEFAULT_RISK: BotRiskConfig = {
   maxLossPct: 2,
   takeProfitPct: 4,
   maxPositionUsd: 100,
   dailyMaxLossUsd: 50,
+  stopLossMode: 'target_ratio',
+  stopLossTargetRatio: 1,
+  leverage: 1,
 };
 
 export class BotManager extends EventEmitter {
@@ -45,7 +53,12 @@ export class BotManager extends EventEmitter {
     this.setMaxListeners(0);
   }
 
-  /** Sunucu açılışında çağrılır — kayıtlı 'running' bot'ları yeniden başlat. */
+  /**
+   * Sunucu açılışında çağrılır — kayıtlı bot'ları memory'e yükler.
+   *
+   * - Paper modda 'running' olanları otomatik tekrar başlat (risk yok)
+   * - Live modda 'running' olanları paused yap (manuel resume bekle)
+   */
   async bootstrap(): Promise<void> {
     if (this.started) return;
     this.started = true;
@@ -56,11 +69,20 @@ export class BotManager extends EventEmitter {
       const runner = this.makeRunner(cfg);
       this.runners.set(cfg.id, runner);
 
-      // Önceden 'running' olanları paused olarak başlat — kullanıcı manuel
-      // resume etmeli. Restart sonrası otomatik canlı emir vermesini istemiyoruz.
       if (cfg.status === 'running') {
-        await this.storage.bots.update(cfg.id, { status: 'paused' });
-        log.info({ botId: cfg.id }, "Bot 'paused' olarak yuklendi (manuel resume gerekli)");
+        if (cfg.mode === 'paper') {
+          // Paper mod — restart sonrası otomatik devam et
+          try {
+            await runner.start();
+            log.info({ botId: cfg.id }, "Paper bot otomatik baslatildi");
+          } catch (err) {
+            log.error({ botId: cfg.id, err }, 'Paper bot baslatilamadi');
+          }
+        } else {
+          // Live mod — kullanıcı manuel resume etmeli (otomatik emir vermesin)
+          await this.storage.bots.update(cfg.id, { status: 'paused' });
+          log.info({ botId: cfg.id }, "Live bot 'paused' olarak yuklendi (manuel resume gerekli)");
+        }
       }
     }
   }
@@ -79,11 +101,11 @@ export class BotManager extends EventEmitter {
 
   async getSnapshot(id: string): Promise<ReturnType<BotRunner['getSnapshot']>> {
     const runner = this.runners.get(id);
-    if (runner) return runner.getSnapshot();
+    if (runner) return this.withPersistedPnl(id, runner.getSnapshot());
     const cfg = await this.storage.bots.get(id);
     if (!cfg) throw new NotFoundError(`Bot ${id}`);
     // Runner yoksa da sahte snapshot dön
-    return {
+    return this.withPersistedPnl(id, {
       config: cfg,
       state: {
         position: null,
@@ -92,8 +114,9 @@ export class BotManager extends EventEmitter {
         candleCount: 0,
         lastTickAt: null,
         lastSignal: null,
+        drawings: [],
       },
-    };
+    });
   }
 
   async create(input: CreateBotInput): Promise<BotConfig> {
@@ -126,14 +149,19 @@ export class BotManager extends EventEmitter {
     return cfg;
   }
 
-  async update(id: string, patch: Partial<BotConfig>): Promise<BotConfig> {
+  async update(id: string, patch: UpdateBotInput): Promise<BotConfig> {
     const cfg = await this.storage.bots.get(id);
     if (!cfg) throw new NotFoundError(`Bot ${id}`);
     const runner = this.runners.get(id);
     if (runner && cfg.status === 'running') {
       throw new ConflictError("Calisan bot duzenlenemez, once durdurun");
     }
-    const updated = await this.storage.bots.update(id, patch);
+    const { risk, ...rest } = patch;
+    const storagePatch: Partial<BotConfig> = { ...rest };
+    if (risk) {
+      storagePatch.risk = { ...cfg.risk, ...risk };
+    }
+    const updated = await this.storage.bots.update(id, storagePatch);
 
     // Runner'ın config'ini de yenile
     if (runner) {
@@ -211,6 +239,51 @@ export class BotManager extends EventEmitter {
     }
     return runner;
   }
+
+  private async withPersistedPnl(
+    id: string,
+    snapshot: ReturnType<BotRunner['getSnapshot']>
+  ): Promise<ReturnType<BotRunner['getSnapshot']>> {
+    const summary = await this.tradeSummary(id, snapshot.config);
+    return {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        position: snapshot.state.position ?? summary.position,
+        realizedPnlUsd: summary.total,
+        todayPnlUsd: summary.today,
+        lastSignal: snapshot.state.lastSignal ?? summary.lastSignal,
+      },
+    };
+  }
+
+  private async tradeSummary(
+    botId: string,
+    cfg: BotConfig
+  ): Promise<{ total: number; today: number; position: Position | null; lastSignal: Signal | null }> {
+    const trades = await this.storage.trades.list({ botId });
+    const todayStart = startOfUtcDay(Date.now());
+    let total = 0;
+    let today = 0;
+    let position: Position | null = null;
+    const lastSignal = trades[0] ? signalFromTrade(trades[0]) : null;
+
+    for (const trade of trades) {
+      const pnl = typeof trade.pnlUsd === 'number' ? trade.pnlUsd : 0;
+      total += pnl;
+      if (trade.createdAt >= todayStart) today += pnl;
+    }
+
+    for (const trade of [...trades].sort((a, b) => a.createdAt - b.createdAt)) {
+      if (isClosingTrade(trade)) {
+        position = null;
+        continue;
+      }
+      position = positionFromOpenTrade(cfg, trade);
+    }
+
+    return { total: roundMoney(total), today: roundMoney(today), position, lastSignal };
+  }
 }
 
 /* ─── Singleton ────────────────────────────────────────── */
@@ -223,4 +296,78 @@ export function getBotManager(storage?: Storage): BotManager {
     manager = new BotManager(storage);
   }
   return manager;
+}
+
+function startOfUtcDay(ts: number): number {
+  const d = new Date(ts);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function isClosingTrade(trade: Trade): boolean {
+  return typeof trade.pnlUsd === 'number';
+}
+
+function signalFromTrade(trade: Trade): Signal {
+  return trade.side === 'BUY' ? 'buy' : 'sell';
+}
+
+function positionFromOpenTrade(cfg: BotConfig, trade: Trade): Position {
+  return {
+    botId: cfg.id,
+    symbol: trade.symbol,
+    side: trade.side,
+    quantity: trade.quantity,
+    entryPrice: trade.price,
+    stopLossPrice:
+      trade.stopLossPrice ??
+      resolveStopLossPrice(
+        trade.side,
+        trade.price,
+        cfg.risk,
+        cfg.risk.maxLossPct,
+        undefined,
+        trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, cfg.risk.takeProfitPct)
+      ),
+    takeProfitPrice: trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, cfg.risk.takeProfitPct),
+    openedAt: trade.createdAt,
+  };
+}
+
+function resolveStopLossPrice(
+  side: Trade['side'],
+  entry: number,
+  risk: BotConfig['risk'],
+  slPct: number | null,
+  strategySlPrice: number | null | undefined,
+  takeProfitPrice: number | undefined
+): number | undefined {
+  const mode = risk.stopLossMode ?? 'target_ratio';
+  if (mode === 'target_ratio' && takeProfitPrice !== undefined) {
+    const ratio = normalizePositive(risk.stopLossTargetRatio, 1);
+    const distance = Math.abs(takeProfitPrice - entry);
+    if (distance > 0) return side === 'BUY' ? entry - distance * ratio : entry + distance * ratio;
+  }
+  if (mode === 'strategy' && strategySlPrice !== null && strategySlPrice !== undefined) {
+    return strategySlPrice;
+  }
+  return fallbackStopLoss(side, entry, slPct ?? risk.maxLossPct);
+}
+
+function normalizePositive(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function fallbackStopLoss(side: Trade['side'], entry: number, pct: number): number | undefined {
+  if (!Number.isFinite(entry) || !Number.isFinite(pct) || pct <= 0) return undefined;
+  return side === 'BUY' ? entry * (1 - pct / 100) : entry * (1 + pct / 100);
+}
+
+function fallbackTakeProfit(side: Trade['side'], entry: number, pct: number): number | undefined {
+  if (!Number.isFinite(entry) || !Number.isFinite(pct) || pct <= 0) return undefined;
+  return side === 'BUY' ? entry * (1 + pct / 100) : entry * (1 - pct / 100);
 }

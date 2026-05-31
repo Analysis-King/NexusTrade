@@ -9,21 +9,25 @@
  * Kullanım:
  *   const pool = new WorkerPool();
  *   await pool.start();
- *   const config = await pool.load(botId, 'rsi_mean_reversion.py');
+ *   const config = await pool.load(botId, strategyFile, params);
  *   const sig = await pool.tick(botId, { candle, candles, portfolio });
  *   await pool.drop(botId);
  *   await pool.shutdown();
  */
 
 import { createLogger } from '../utils/logger.js';
+import { env } from '../config/env.js';
 import { WorkerError } from '../utils/errors.js';
 import { WorkerProcess } from './process.js';
 import type {
   BacktestRequest,
   BacktestResponse,
+  DrawRequest,
+  DrawResponse,
   LoadResponse,
   TickRequest,
   TickResponse,
+  ValidateStrategyResponse,
 } from './types.js';
 
 const log = createLogger('worker-pool');
@@ -39,6 +43,7 @@ export interface WorkerPoolOptions {
 interface InstanceMeta {
   workerIdx: number;
   strategyFile: string;
+  params: Record<string, unknown>;
 }
 
 export class WorkerPool {
@@ -54,7 +59,7 @@ export class WorkerPool {
   constructor(opts: WorkerPoolOptions = {}) {
     this.size = Math.max(1, opts.size ?? 2);
     this.tickTimeoutMs = opts.tickTimeoutMs ?? 5_000;
-    this.backtestTimeoutMs = opts.backtestTimeoutMs ?? 180_000;
+    this.backtestTimeoutMs = opts.backtestTimeoutMs ?? env.BACKTEST_WORKER_TIMEOUT_MS;
   }
 
   async start(): Promise<void> {
@@ -84,7 +89,7 @@ export class WorkerPool {
 
   /* ─── Bot operasyonları ────────────────────────────────── */
 
-  async load(instanceId: string, strategyFile: string): Promise<LoadResponse> {
+  async load(instanceId: string, strategyFile: string, params: Record<string, unknown> = {}): Promise<LoadResponse> {
     if (this.instanceMap.has(instanceId)) {
       // Zaten yüklü — drop & yeniden yükle
       await this.drop(instanceId).catch(() => undefined);
@@ -96,13 +101,55 @@ export class WorkerPool {
       const data = await worker.request<LoadResponse>('load', {
         instance: instanceId,
         strategy_file: strategyFile,
+        params,
       });
-      this.instanceMap.set(instanceId, { workerIdx: idx, strategyFile });
+      this.instanceMap.set(instanceId, { workerIdx: idx, strategyFile, params });
       worker.loadedInstances.add(instanceId);
       return data;
     } catch (err) {
       throw new WorkerError(`Strateji yuklenemedi: ${(err as Error).message}`);
     }
+  }
+
+  async loadCode(
+    instanceId: string,
+    strategyFile: string,
+    sourceCode: string,
+    params: Record<string, unknown> = {}
+  ): Promise<LoadResponse> {
+    if (this.instanceMap.has(instanceId)) {
+      await this.drop(instanceId).catch(() => undefined);
+    }
+    const idx = this.pickWorker();
+    const worker = this.workers[idx]!;
+
+    try {
+      const data = await worker.request<LoadResponse>('load_code', {
+        instance: instanceId,
+        strategy_file: strategyFile,
+        source_code: sourceCode,
+        params,
+      });
+      this.instanceMap.set(instanceId, { workerIdx: idx, strategyFile, params });
+      worker.loadedInstances.add(instanceId);
+      return data;
+    } catch (err) {
+      throw new WorkerError(`Strateji kodu yuklenemedi: ${(err as Error).message}`);
+    }
+  }
+
+  async validateCode(strategyFile: string, sourceCode: string): Promise<ValidateStrategyResponse> {
+    const idx = this.pickWorker();
+    const worker = this.workers[idx]!;
+    if (!worker || !worker.isAlive) throw new WorkerError('Validate icin calisan worker yok');
+    return worker.request<ValidateStrategyResponse>(
+      'validate_code',
+      {
+        strategy_file: strategyFile,
+        source_code: sourceCode,
+      },
+      this.tickTimeoutMs
+    );
   }
 
   async drop(instanceId: string): Promise<void> {
@@ -127,6 +174,22 @@ export class WorkerPool {
     }
     return worker.request<TickResponse>(
       'tick',
+      { instance: instanceId, ...req },
+      this.tickTimeoutMs
+    );
+  }
+
+  async draw(instanceId: string, req: Omit<DrawRequest, 'instance'>): Promise<DrawResponse> {
+    const meta = this.instanceMap.get(instanceId);
+    if (!meta) {
+      throw new WorkerError(`Bot yuklu degil: ${instanceId}`);
+    }
+    const worker = this.workers[meta.workerIdx];
+    if (!worker || !worker.isAlive) {
+      throw new WorkerError(`Bot worker'i olu: ${instanceId}`);
+    }
+    return worker.request<DrawResponse>(
+      'draw',
       { instance: instanceId, ...req },
       this.tickTimeoutMs
     );
@@ -193,6 +256,7 @@ export class WorkerPool {
             ?.request('load', {
               instance: instId,
               strategy_file: meta.strategyFile,
+              params: meta.params,
             })
             .then(() => {
               this.workers[idx]?.loadedInstances.add(instId);
@@ -205,20 +269,21 @@ export class WorkerPool {
     this.workers[idx] = w;
   }
 
-  /** En az yüklü worker'ı seç (instance count bazlı). */
+  /** En az yüklü worker'ı seç: kalıcı instance + anlık istek yükü. */
   private pickWorker(): number {
     let bestIdx = 0;
-    let bestCount = Infinity;
+    let bestScore = Infinity;
     for (let i = 0; i < this.workers.length; i++) {
       const w = this.workers[i];
       if (!w?.isAlive) continue;
-      if (w.loadedInstances.size < bestCount) {
-        bestCount = w.loadedInstances.size;
+      const score = w.loadedInstances.size * 1000 + w.inflight;
+      if (score < bestScore) {
+        bestScore = score;
         bestIdx = i;
       }
     }
     // Round-robin fallback (eşit yüklülerde)
-    if (bestCount === Infinity) {
+    if (bestScore === Infinity) {
       bestIdx = this.rrCursor % this.workers.length;
       this.rrCursor++;
     }

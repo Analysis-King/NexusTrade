@@ -35,6 +35,7 @@ import { candleToRaw, type CandleRaw, type Signal } from '../workers/types.js';
 import type { Storage } from '../storage/index.js';
 import type {
   BotConfig,
+  BotRiskConfig,
   Candle,
   Position,
   Trade,
@@ -56,6 +57,7 @@ export interface BotRuntimeState {
   todayResetAt: number; // gün başlangıcı (00:00 UTC)
   lastTickAt: number | null;
   lastSignal: Signal | null;
+  drawings: unknown[];
 }
 
 const MAX_CANDLE_BUFFER = 500;
@@ -83,6 +85,7 @@ export class BotRunner extends EventEmitter {
       todayResetAt: startOfUtcDay(Date.now()),
       lastTickAt: null,
       lastSignal: null,
+      drawings: [],
     };
   }
 
@@ -100,6 +103,7 @@ export class BotRunner extends EventEmitter {
       candleCount: number;
       lastTickAt: number | null;
       lastSignal: Signal | null;
+      drawings: unknown[];
     };
   } {
     return {
@@ -111,6 +115,7 @@ export class BotRunner extends EventEmitter {
         candleCount: this.state.candles.length,
         lastTickAt: this.state.lastTickAt,
         lastSignal: this.state.lastSignal,
+        drawings: this.state.drawings,
       },
     };
   }
@@ -118,7 +123,10 @@ export class BotRunner extends EventEmitter {
   /* ─── Lifecycle ────────────────────────────────────────── */
 
   async start(): Promise<void> {
-    if (this.config.status === 'running') return;
+    // Eğer zaten stream'e abone olmuşsak, çift start önle.
+    // (Status 'running' tek başına yeterli değil — restart sonrası DB'deki status
+    // 'running' olabilir ama subscription henüz yok.)
+    if (this.unsubscribeStream) return;
 
     log.info(
       { botId: this.id, symbol: this.config.symbol, mode: this.config.mode },
@@ -127,11 +135,13 @@ export class BotRunner extends EventEmitter {
 
     try {
       // 1. Strateji yükle
-      await getWorkerPool().load(this.id, this.config.strategyId);
+      await this.hydrateStateFromTrades();
+      await getWorkerPool().load(this.id, this.config.strategyId, this.strategyRuntimeParams());
 
       // 2. Tarihsel veri pre-fill (strateji ilk tick'ten itibaren ısınmış olsun)
       const history = await this.preloadHistory();
       this.state.candles = history.map(candleToRaw);
+      await this.refreshDrawingsFromHistory();
 
       // 3. Stream'e abone ol
       this.subscribeStream();
@@ -166,8 +176,23 @@ export class BotRunner extends EventEmitter {
     this.emit('paused', this.getSnapshot());
   }
 
+  /**
+   * Resume — paused → running.
+   *
+   * Önemli: Eğer bot **hiç başlatılmamışsa** (subscription yok), resume yerine
+   * tam start() çalıştırırız. Bu, restart sonrası live botların manuel resume
+   * edilmesi durumunda da doğru davranır.
+   */
   async resume(): Promise<void> {
     if (this.config.status !== 'paused') return;
+    if (!this.unsubscribeStream) {
+      // Stream subscription hiç yok — tam start lazım
+      log.info({ botId: this.id }, 'Resume: subscription yok, tam start ediliyor');
+      // Status'u önce idle'a çek, start() running'e geçirsin
+      await this.updateConfig({ status: 'idle' });
+      await this.start();
+      return;
+    }
     await this.updateConfig({ status: 'running' });
     this.emit('resumed', this.getSnapshot());
   }
@@ -259,6 +284,7 @@ export class BotRunner extends EventEmitter {
           usdt: this.config.capitalUsd,
           has_position: this.state.position !== null,
           pnl: this.state.realizedPnlUsd,
+          side: this.state.position?.side,
         },
       })
       .catch((err) => {
@@ -267,14 +293,44 @@ export class BotRunner extends EventEmitter {
       });
 
     if (!tickResp) return;
-    this.state.lastSignal = tickResp.signal;
+    if (tickResp.signal !== 'hold') {
+      this.state.lastSignal = tickResp.signal;
+    }
+    this.state.drawings = Array.isArray(tickResp.drawings) ? tickResp.drawings : [];
 
     // 4. Sinyali değerlendir
-    if (tickResp.signal === 'buy' && !this.state.position) {
-      await this.openPosition(candle.c, 'BUY', tickResp.sl_pct, tickResp.tp_pct);
-    } else if (tickResp.signal === 'sell' && this.state.position) {
-      await this.closePosition(candle.c, 'signal');
+    if (tickResp.signal === 'buy') {
+      if (this.state.position?.side === 'SELL') {
+        await this.closePosition(candle.c, 'signal');
+      } else if (!this.state.position) {
+        await this.openPosition(
+          candle.c,
+          'BUY',
+          tickResp.sl_pct ?? this.config.risk.maxLossPct,
+          tickResp.tp_pct ?? this.config.risk.takeProfitPct,
+          tickResp.sl_price,
+          tickResp.tp_price
+        );
+      }
+    } else if (tickResp.signal === 'sell') {
+      if (this.state.position?.side === 'BUY') {
+        await this.closePosition(candle.c, 'signal');
+      } else if (!this.state.position) {
+        await this.openPosition(
+          candle.c,
+          'SELL',
+          tickResp.sl_pct ?? this.config.risk.maxLossPct,
+          tickResp.tp_pct ?? this.config.risk.takeProfitPct,
+          tickResp.sl_price,
+          tickResp.tp_price
+        );
+      }
+    } else if (tickResp.signal === 'close') {
+      if (this.state.position) {
+        await this.closePosition(candle.c, 'signal');
+      }
     }
+    this.emit('updated', this.getSnapshot());
   }
 
   private async checkSlTp(candle: CandleRaw): Promise<boolean> {
@@ -307,30 +363,36 @@ export class BotRunner extends EventEmitter {
     price: number,
     side: 'BUY' | 'SELL',
     slPct: number | null,
-    tpPct: number | null
+    tpPct: number | null,
+    slPriceOverride?: number | null,
+    tpPriceOverride?: number | null
   ): Promise<void> {
+    const leverage = normalizePositive(this.config.risk.leverage, 1);
     const notionalUsd = Math.min(
       this.config.risk.maxPositionUsd,
-      this.config.capitalUsd
+      this.config.capitalUsd * leverage
     );
     if (notionalUsd <= 0) {
       log.warn({ botId: this.id }, 'Notional 0, pozisyon acilmiyor');
       return;
     }
 
-    const slPrice =
-      slPct !== null && slPct !== undefined
-        ? side === 'BUY'
-          ? price * (1 - slPct / 100)
-          : price * (1 + slPct / 100)
-        : undefined;
-
     const tpPrice =
-      tpPct !== null && tpPct !== undefined
+      tpPriceOverride !== null && tpPriceOverride !== undefined
+        ? tpPriceOverride
+        : tpPct !== null && tpPct !== undefined
         ? side === 'BUY'
           ? price * (1 + tpPct / 100)
           : price * (1 - tpPct / 100)
         : undefined;
+    const slPrice = resolveStopLossPrice(
+      side,
+      price,
+      this.config.risk,
+      slPct,
+      slPriceOverride,
+      tpPrice
+    );
 
     const ctx: ExecutionContext = { bot: this.config, price };
     try {
@@ -408,6 +470,90 @@ export class BotRunner extends EventEmitter {
 
   /* ─── Daily reset ──────────────────────────────────────── */
 
+  private async hydrateStateFromTrades(): Promise<void> {
+    try {
+      const trades = await this.storage.trades.list({ botId: this.id });
+      const todayStart = startOfUtcDay(Date.now());
+      let total = 0;
+      let today = 0;
+      let position: Position | null = null;
+
+      for (const trade of trades) {
+        const pnl = typeof trade.pnlUsd === 'number' ? trade.pnlUsd : 0;
+        total += pnl;
+        if (trade.createdAt >= todayStart) today += pnl;
+      }
+
+      for (const trade of [...trades].sort((a, b) => a.createdAt - b.createdAt)) {
+        if (isClosingTrade(trade)) {
+          position = null;
+          continue;
+        }
+        position = this.positionFromOpenTrade(trade);
+      }
+
+      this.state.realizedPnlUsd = Math.round(total * 100) / 100;
+      this.state.todayPnlUsd = Math.round(today * 100) / 100;
+      this.state.todayResetAt = todayStart;
+      this.state.position = position;
+      this.state.lastSignal = trades[0] ? signalFromTrade(trades[0]) : null;
+    } catch (err) {
+      log.warn({ botId: this.id, err }, 'Bot durumu gecmisten yuklenemedi');
+    }
+  }
+
+  private positionFromOpenTrade(trade: Trade): Position {
+    return {
+      botId: this.id,
+      symbol: trade.symbol,
+      side: trade.side,
+      quantity: trade.quantity,
+      entryPrice: trade.price,
+      stopLossPrice:
+        trade.stopLossPrice ??
+        resolveStopLossPrice(
+          trade.side,
+          trade.price,
+          this.config.risk,
+          this.config.risk.maxLossPct,
+          undefined,
+          trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, this.config.risk.takeProfitPct)
+        ),
+      takeProfitPrice:
+        trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, this.config.risk.takeProfitPct),
+      openedAt: trade.createdAt,
+    };
+  }
+
+  private strategyRuntimeParams(): Record<string, unknown> {
+    return {
+      ...this.config.strategyParams,
+      stop_loss_pct: this.config.risk.maxLossPct,
+      take_profit_pct: this.config.risk.takeProfitPct,
+      stop_loss_mode: this.config.risk.stopLossMode ?? 'target_ratio',
+      stop_loss_target_ratio: this.config.risk.stopLossTargetRatio ?? 1,
+      max_position_usd: this.config.risk.maxPositionUsd,
+      leverage: this.config.risk.leverage ?? 1,
+    };
+  }
+
+  private async refreshDrawingsFromHistory(): Promise<void> {
+    const last = this.state.candles[this.state.candles.length - 1];
+    if (!last) return;
+
+    const drawResp = await getWorkerPool()
+      .draw(this.id, {
+        candles: this.state.candles,
+      })
+      .catch((err) => {
+        log.warn({ botId: this.id, err }, 'Ilk cizim taramasi yapilamadi');
+        return null;
+      });
+
+    if (!drawResp) return;
+    this.state.drawings = Array.isArray(drawResp.drawings) ? drawResp.drawings : [];
+  }
+
   private resetDailyIfNeeded(): void {
     const today = startOfUtcDay(Date.now());
     if (today > this.state.todayResetAt) {
@@ -426,4 +572,51 @@ function startOfUtcDay(ts: number): number {
 }
 
 // kullanılmıyor uyarısını engelle
+function isClosingTrade(trade: Trade): boolean {
+  return typeof trade.pnlUsd === 'number';
+}
+
+function signalFromTrade(trade: Trade): Signal {
+  return trade.side === 'BUY' ? 'buy' : 'sell';
+}
+
+function resolveStopLossPrice(
+  side: Trade['side'],
+  entry: number,
+  risk: BotRiskConfig,
+  slPct: number | null,
+  strategySlPrice: number | null | undefined,
+  takeProfitPrice: number | undefined
+): number | undefined {
+  const mode = risk.stopLossMode ?? 'target_ratio';
+  if (mode === 'target_ratio' && takeProfitPrice !== undefined) {
+    const ratio = normalizePositive(risk.stopLossTargetRatio, 1);
+    const distance = Math.abs(takeProfitPrice - entry);
+    if (distance > 0) {
+      return side === 'BUY' ? entry - distance * ratio : entry + distance * ratio;
+    }
+  }
+
+  if (mode === 'strategy' && strategySlPrice !== null && strategySlPrice !== undefined) {
+    return strategySlPrice;
+  }
+
+  const pct = slPct ?? risk.maxLossPct;
+  return fallbackStopLoss(side, entry, pct);
+}
+
+function normalizePositive(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function fallbackStopLoss(side: Trade['side'], entry: number, pct: number): number | undefined {
+  if (!Number.isFinite(entry) || !Number.isFinite(pct) || pct <= 0) return undefined;
+  return side === 'BUY' ? entry * (1 - pct / 100) : entry * (1 + pct / 100);
+}
+
+function fallbackTakeProfit(side: Trade['side'], entry: number, pct: number): number | undefined {
+  if (!Number.isFinite(entry) || !Number.isFinite(pct) || pct <= 0) return undefined;
+  return side === 'BUY' ? entry * (1 + pct / 100) : entry * (1 - pct / 100);
+}
+
 void BotError;

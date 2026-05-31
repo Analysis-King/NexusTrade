@@ -11,11 +11,14 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 
 import { corsOrigins, env, isDev } from './config/env.js';
+import { backtestRouter } from './routes/backtests.js';
 import { botRouter } from './routes/bots.js';
 import { devRouter } from './routes/dev.js';
 import { healthRouter } from './routes/health.js';
+import { indicatorRouter } from './routes/indicators.js';
 import { marketRouter } from './routes/market.js';
 import { errorHandler, notFoundHandler, requestLogger } from './routes/middleware.js';
+import { strategyRouter } from './routes/strategies.js';
 
 export function createApp(): Express {
   const app = express();
@@ -68,7 +71,10 @@ export function createApp(): Express {
   // Routes
   app.use('/api', healthRouter);
   app.use('/api/market', marketRouter);
+  app.use('/api/indicators', indicatorRouter);
   app.use('/api/bots', botRouter);
+  app.use('/api/strategies', strategyRouter);
+  app.use('/api/backtests', backtestRouter);
 
   // Geliştirme modunda dev route'ları aç
   if (isDev) {
