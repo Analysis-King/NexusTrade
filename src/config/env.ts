@@ -26,7 +26,6 @@ const envSchema = z.object({
   BINANCE_RECV_WINDOW: z.coerce.number().int().positive().default(5000),
 
   DATA_DIR: z.string().default('./data'),
-  PORTFOLIO_PROFILE_REPORT: z.string().default('./data/orphan_market_reader_portfolio_optimizer_lev3.json'),
 
   PYTHON_BIN: z.string().default('python3'),
   WORKER_POOL_SIZE: z.coerce.number().int().min(1).max(32).default(4),

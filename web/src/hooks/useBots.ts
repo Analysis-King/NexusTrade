@@ -17,16 +17,12 @@ import {
 import {
   botsApi,
   type CreateBotInput,
-  type DeployProfileGateInput,
-  type ProfileGateDeployResult,
-  type ProfileGateStatus,
 } from '@/api/endpoints';
 import { ws } from '@/api/ws';
 import type { BotConfig, BotSnapshot, Trade } from '@/types/api';
 
 const KEY = {
   list: ['bots'] as const,
-  profileGate: ['bots', 'profile-gate'] as const,
   detail: (id: string) => ['bots', id] as const,
   trades: (id: string) => ['bots', id, 'trades'] as const,
 };
@@ -105,26 +101,6 @@ export function useCreateBot(): UseMutationResult<BotConfig, Error, CreateBotInp
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: CreateBotInput) => botsApi.create(input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: KEY.list }),
-  });
-}
-
-export function useProfileGate() {
-  return useQuery<ProfileGateStatus, Error>({
-    queryKey: KEY.profileGate,
-    queryFn: () => botsApi.profileGate(),
-    staleTime: 30_000,
-  });
-}
-
-export function useDeployProfileGate(): UseMutationResult<
-  ProfileGateDeployResult,
-  Error,
-  DeployProfileGateInput
-> {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: DeployProfileGateInput) => botsApi.deployProfileGate(input),
     onSuccess: () => qc.invalidateQueries({ queryKey: KEY.list }),
   });
 }

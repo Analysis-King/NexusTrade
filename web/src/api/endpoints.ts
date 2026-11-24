@@ -55,61 +55,8 @@ export interface CreateBotInput {
   }>;
 }
 
-export interface ProfileGateDraft {
-  profile: string;
-  weightPct: number;
-  expectedDailyPct: number | null;
-  bot: CreateBotInput;
-}
-
-export interface ProfileGateStatus {
-  source: string;
-  generatedAt: string | null;
-  allocation: {
-    strategy: string;
-    plan: string;
-    leverage?: number | null;
-    max_position_pct?: number | null;
-    expectedDailyPct?: number | null;
-    walkForwardAvgDailyPct?: number | null;
-    walkForwardMedianDailyPct?: number | null;
-    walkForwardWorstDailyPct?: number | null;
-    profiles: Array<{
-      symbol: string;
-      interval: Interval;
-      capital_weight_pct: number;
-      latest_daily_pct?: number | null;
-    }>;
-  };
-  drafts: ProfileGateDraft[];
-}
-
-export interface DeployProfileGateInput {
-  capitalUsd?: number;
-  mode?: 'paper' | 'live';
-  prefix?: string;
-  maxLossPct?: number;
-  takeProfitPct?: number;
-  dailyMaxLossPct?: number;
-  stopLossMode?: 'percent' | 'target_ratio' | 'strategy';
-  stopLossTargetRatio?: number;
-  leverage?: number;
-  start?: boolean;
-}
-
-export interface ProfileGateDeployResult {
-  gate: ProfileGateStatus;
-  drafts: ProfileGateDraft[];
-  created: Array<{ profile: string; bot: BotConfig }>;
-  skipped: Array<{ profile: string; reason: 'exists'; bot: BotConfig }>;
-  started: boolean;
-}
-
 export const botsApi = {
   list:    () => api.get<BotConfig[]>('/bots'),
-  profileGate: () => api.get<ProfileGateStatus>('/bots/profile-gate'),
-  deployProfileGate: (input: DeployProfileGateInput) =>
-    api.post<ProfileGateDeployResult>('/bots/profile-gate/deploy', input),
   get:     (id: string) => api.get<BotSnapshot>(`/bots/${id}`),
   create:  (input: CreateBotInput) => api.post<BotConfig>('/bots', input),
   update:  (id: string, patch: Partial<CreateBotInput>) =>
