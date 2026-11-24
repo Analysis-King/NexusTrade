@@ -228,6 +228,26 @@ export class BotRunner extends EventEmitter {
     this.emit('stopped', this.getSnapshot());
   }
 
+  /**
+   * Runner'i sessizce devre disi birak: stream aboneligi, yoklama zamanlayicisi
+   * ve worker instance'i serbest birakilir; kayitli durum (status) DEGISMEZ.
+   * Config guncellenirken eski runner yenisiyle degistirilmeden once cagrilir.
+   */
+  async dispose(): Promise<void> {
+    if (this.unsubscribeStream) {
+      this.unsubscribeStream();
+      this.unsubscribeStream = null;
+    }
+    this.stopFallbackPolling();
+    this.pendingClosedCandles.clear();
+    this.footprints = [];
+    this.footprintBuckets.clear();
+    this.activeKlineWindow = null;
+    this.footprintSubscribedAt = 0;
+    await getWorkerPool().drop(this.id).catch(() => undefined);
+    this.removeAllListeners();
+  }
+
   async pause(): Promise<void> {
     if (this.config.status !== 'running') return;
     await this.updateConfig({ status: 'paused' });
@@ -379,7 +399,16 @@ export class BotRunner extends EventEmitter {
         }
 
         this.upsertClosedCandle(pending.candle, pending.footprint);
-        if (this.config.status !== 'running') continue;
+        if (this.config.status !== 'running') {
+          // Strateji calismaz ama mum "islendi" sayilir: aksi halde resume
+          // sonrasi yedek yoklama ayni mumlari tekrar ekler (tampon bozulur)
+          // ve eski mumlar yeni sinyal gibi islenir.
+          if (this.config.status === 'paused' && this.state.position) {
+            await this.protectPausedPosition(pending.candle);
+          }
+          this.lastProcessedCandleTime = pending.candle.t;
+          continue;
+        }
 
         await this.processCandle(pending.candle, pending.footprint);
         this.lastProcessedCandleTime = pending.candle.t;
@@ -393,6 +422,12 @@ export class BotRunner extends EventEmitter {
     const last = this.state.candles[this.state.candles.length - 1];
     if (last && last.t === candle.t) {
       this.state.candles[this.state.candles.length - 1] = candle;
+    } else if (last && candle.t < last.t) {
+      // Sirasiz/eski mum: varsa yerinde guncelle, yoksa yoksay. Sona eklemek
+      // tamponu bozar (tekrarli ve sirasiz mumlar stratejiye gider).
+      const idx = this.state.candles.findIndex((item) => item.t === candle.t);
+      if (idx >= 0) this.state.candles[idx] = candle;
+      return;
     } else {
       this.state.candles.push(candle);
       if (this.state.candles.length > MAX_CANDLE_BUFFER) {
@@ -426,7 +461,9 @@ export class BotRunner extends EventEmitter {
   }
 
   private async pollLatestClosedCandles(): Promise<void> {
-    if (this.config.status !== 'running') return;
+    // Duraklatilmis botta da yokla: acik pozisyonun SL/TP korumasi stream
+    // koparsa da calissin.
+    if (this.config.status !== 'running' && this.config.status !== 'paused') return;
     try {
       const raw = await PUBLIC_CLIENT.klines({
         symbol: this.config.symbol,
@@ -537,6 +574,19 @@ export class BotRunner extends EventEmitter {
     }
     await this.refreshDrawingsFromHistory();
     this.emit('updated', this.getSnapshot());
+  }
+
+  /**
+   * Duraklatilmis bot: strateji sinyali alinmaz ama acik pozisyon korumasiz
+   * kalmaz. Gunluk zarar limiti botu 'paused' yaptigi icin bu ozellikle onemli.
+   */
+  private async protectPausedPosition(candle: CandleRaw): Promise<void> {
+    this.resetDailyIfNeeded();
+    const closed = await this.checkSlTp(candle);
+    if (closed) {
+      log.info({ botId: this.id, candleTime: candle.t }, 'Duraklatilmis botta pozisyon SL/TP ile kapandi');
+      this.emit('updated', this.getSnapshot());
+    }
   }
 
   private getFootprintBucket(t: number): FootprintAccumulator {

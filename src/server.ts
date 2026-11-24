@@ -10,14 +10,16 @@
  */
 
 import http from 'node:http';
+import path from 'node:path';
 import { createApp } from './app.js';
 import { getBotManager } from './bot/manager.js';
 import { env, isDev } from './config/env.js';
 import { startPaperPortfolioSupervisor } from './services/paperPortfolioSupervisor.js';
 import { NexusWebSocketServer } from './services/wsServer.js';
 import { getStorage } from './storage/index.js';
+import { cleanupStaleTempFiles } from './storage/json/atomicFile.js';
 import { createLogger } from './utils/logger.js';
-import { getWorkerPool, shutdownWorkerPool } from './workers/pool.js';
+import { getJobWorkerPool, getWorkerPool, shutdownWorkerPool } from './workers/pool.js';
 
 const log = createLogger('server');
 
@@ -43,6 +45,9 @@ async function main(): Promise<void> {
   // WebSocket sunucusu — HTTP server'a attach et (path: /ws)
   const wsServer = new NexusWebSocketServer(server);
 
+  // Onceki basarisiz/yarim yazimlardan kalan yetim tmp dosyalarini temizle.
+  await cleanupDataTempFiles();
+
   // Bot manager route'lar gelmeden singleton olarak hazir olsun.
   const storage = getStorage();
   const botManager = getBotManager(storage);
@@ -57,8 +62,8 @@ async function main(): Promise<void> {
   await listen(server);
 
   // Python worker pool - bot motoru bunu kullanacak.
-  const pool = getWorkerPool();
-  await pool.start();
+  // Backtest/cizim isleri ayri havuzda: uzun isler bot tick'lerini bloklamaz.
+  await Promise.all([getWorkerPool().start(), getJobWorkerPool().start()]);
 
   // Kayitli botlari yukle, running paper botlari yeniden baslat.
   await botManager.bootstrap();
@@ -150,6 +155,19 @@ async function main(): Promise<void> {
     log.fatal({ err }, 'Uncaught exception - kapatiliyor');
     setTimeout(() => process.exit(1), 500).unref();
   });
+}
+
+async function cleanupDataTempFiles(): Promise<void> {
+  for (const dir of [env.DATA_DIR, path.join(env.DATA_DIR, 'backtests')]) {
+    try {
+      const { files, bytes } = await cleanupStaleTempFiles(dir);
+      if (files > 0) {
+        log.info({ dir, files, mb: Math.round(bytes / 1024 / 1024) }, 'Yetim tmp dosyalari temizlendi');
+      }
+    } catch (err) {
+      log.warn({ dir, err }, 'Tmp dosya temizligi yapilamadi');
+    }
+  }
 }
 
 function listen(server: http.Server): Promise<void> {

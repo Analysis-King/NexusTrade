@@ -163,8 +163,11 @@ export class BotManager extends EventEmitter {
     }
     const updated = await this.storage.bots.update(id, storagePatch);
 
-    // Runner'ın config'ini de yenile
+    // Runner'in config'ini de yenile. Eski runner (orn. duraklatilmis) hala
+    // stream'e abone ve yoklama zamanlayicisi acik olabilir — once kapat,
+    // yoksa arkada "zombi" runner kalir.
     if (runner) {
+      await runner.dispose();
       this.runners.set(id, this.makeRunner(updated));
     }
     this.emit('updated', updated);

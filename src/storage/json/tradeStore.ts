@@ -8,7 +8,7 @@
 import path from 'node:path';
 import type { Trade } from '../../types/domain.js';
 import type { TradeStore } from '../types.js';
-import { readJson, writeJson } from './atomicFile.js';
+import { readJson, updateJson } from './atomicFile.js';
 
 interface TradesFile {
   version: 1;
@@ -25,7 +25,7 @@ export class JsonTradeStore implements TradeStore {
   }
 
   private async readAll(): Promise<TradesFile> {
-    return readJson<TradesFile>(this.filePath, { version: 1, trades: [] });
+    return readJson<TradesFile>(this.filePath, emptyFile());
   }
 
   async list(opts: { botId?: string; limit?: number; since?: number } = {}): Promise<Trade[]> {
@@ -43,23 +43,28 @@ export class JsonTradeStore implements TradeStore {
   }
 
   async add(trade: Trade): Promise<Trade> {
-    const data = await this.readAll();
+    // Oku-ekle-yaz tek kilit altinda: ayni anda kapanan mumlarda birden fazla
+    // bot trade yazdiginda kayit kaybolmaz.
+    return updateJson<TradesFile, Trade>(this.filePath, emptyFile(), (data) => {
+      // Idempotency: ayni clientOrderId varsa mevcudunu dondur, yenisini ekleme
+      const existing = data.trades.find((t) => t.clientOrderId === trade.clientOrderId);
+      if (existing) return existing;
 
-    // Idempotency: aynı clientOrderId varsa mevcudunu döndür, yenisini ekleme
-    const existing = data.trades.find((t) => t.clientOrderId === trade.clientOrderId);
-    if (existing) return existing;
-
-    data.trades.push(trade);
-    // Trim — en eski olanları at
-    if (data.trades.length > MAX_TRADES) {
-      data.trades = data.trades.slice(-MAX_TRADES);
-    }
-    await writeJson(this.filePath, data);
-    return trade;
+      data.trades.push(trade);
+      // Trim — en eski olanlari at
+      if (data.trades.length > MAX_TRADES) {
+        data.trades = data.trades.slice(-MAX_TRADES);
+      }
+      return trade;
+    });
   }
 
   async findByClientOrderId(clientOrderId: string): Promise<Trade | null> {
     const data = await this.readAll();
     return data.trades.find((t) => t.clientOrderId === clientOrderId) ?? null;
   }
+}
+
+function emptyFile(): TradesFile {
+  return { version: 1, trades: [] };
 }

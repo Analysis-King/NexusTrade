@@ -24,6 +24,15 @@ interface PendingRequest {
   cmd: string;
 }
 
+interface QueuedRequest {
+  id: string;
+  cmd: string;
+  line: string;
+  timeoutMs: number;
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+}
+
 export interface WorkerProcessOptions {
   /** pool_worker.py'nin tam yolu */
   scriptPath?: string;
@@ -37,6 +46,13 @@ export class WorkerProcess extends EventEmitter {
   private child: ChildProcess | null = null;
   private buffer = '';
   private pending = new Map<string, PendingRequest>();
+  /**
+   * Python worker istekleri tek tek, sirayla isler. Hepsini ayni anda
+   * stdin'e basarsak siradaki isteklerin timeout sayaci beklerken dolar ve
+   * worker gereksiz yere oldurulur. Bu yuzden Node tarafinda kuyrukluyoruz:
+   * bir anda en fazla bir istek yazilir, timeout yazildigi anda baslar.
+   */
+  private queue: QueuedRequest[] = [];
   private dead = false;
   private readonly scriptPath: string;
   private readonly defaultTimeoutMs: number;
@@ -98,7 +114,7 @@ export class WorkerProcess extends EventEmitter {
     });
   }
 
-  /** Bir komut gönder, cevabı bekle. */
+  /** Bir komut gönder, cevabı bekle. Istekler sirayla islenir. */
   request<T = unknown>(cmd: string, payload: object = {}, timeoutMs?: number): Promise<T> {
     if (!this.isAlive) {
       return Promise.reject(new WorkerError('Worker olu, istek gonderilemez'));
@@ -106,55 +122,67 @@ export class WorkerProcess extends EventEmitter {
 
     return new Promise<T>((resolve, reject) => {
       const id = randomUUID();
-      const timer = setTimeout(() => {
-        const pending = this.pending.get(id);
-        if (!pending) return;
-        const err = new WorkerError(`Request timeout (${timeoutMs ?? this.defaultTimeoutMs}ms): ${cmd}`);
-        this.pending.delete(id);
-        this.inflight = Math.max(0, this.inflight - 1);
-        reject(err);
-        this.terminateAfterTimeout(err);
-      }, timeoutMs ?? this.defaultTimeoutMs);
-
-      this.pending.set(id, {
+      this.queue.push({
+        id,
+        cmd,
+        line: JSON.stringify({ id, cmd, ...payload }) + '\n',
+        timeoutMs: timeoutMs ?? this.defaultTimeoutMs,
         resolve: resolve as (value: unknown) => void,
         reject,
-        timer,
-        cmd,
       });
       this.inflight++;
-
-      const line = JSON.stringify({ id, cmd, ...payload }) + '\n';
-      const stdin = this.child?.stdin;
-      if (!stdin || stdin.destroyed || !stdin.writable) {
-        this.pending.delete(id);
-        this.inflight = Math.max(0, this.inflight - 1);
-        clearTimeout(timer);
-        const err = new WorkerError('Worker stdin kapali, istek gonderilemez');
-        reject(err);
-        this.markDead(err);
-        return;
-      }
-
-      try {
-        const ok = stdin.write(line);
-        if (!ok) {
-          stdin.once('drain', () => {});
-        }
-      } catch (err) {
-        this.pending.delete(id);
-        this.inflight = Math.max(0, this.inflight - 1);
-        clearTimeout(timer);
-        const error = err instanceof Error ? err : new Error(String(err));
-        reject(error);
-        this.markDead(error);
-      }
+      this.pump();
     });
+  }
+
+  /** Kuyruktaki bir sonraki istegi, aktif istek yoksa gonderir. */
+  private pump(): void {
+    if (this.dead || this.pending.size > 0) return;
+    const next = this.queue.shift();
+    if (!next) return;
+
+    const stdin = this.child?.stdin;
+    if (!stdin || stdin.destroyed || !stdin.writable) {
+      this.inflight = Math.max(0, this.inflight - 1);
+      const err = new WorkerError('Worker stdin kapali, istek gonderilemez');
+      next.reject(err);
+      this.markDead(err);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const pending = this.pending.get(next.id);
+      if (!pending) return;
+      const err = new WorkerError(`Request timeout (${next.timeoutMs}ms): ${next.cmd}`);
+      this.pending.delete(next.id);
+      this.inflight = Math.max(0, this.inflight - 1);
+      next.reject(err);
+      this.terminateAfterTimeout(err);
+    }, next.timeoutMs);
+
+    this.pending.set(next.id, {
+      resolve: next.resolve,
+      reject: next.reject,
+      timer,
+      cmd: next.cmd,
+    });
+
+    try {
+      stdin.write(next.line);
+    } catch (err) {
+      this.pending.delete(next.id);
+      this.inflight = Math.max(0, this.inflight - 1);
+      clearTimeout(timer);
+      const error = err instanceof Error ? err : new Error(String(err));
+      next.reject(error);
+      this.markDead(error);
+    }
   }
 
   async kill(): Promise<void> {
     if (!this.child) return;
     this.dead = true;
+    this.rejectAll(new WorkerError('Worker kapatildi'));
     try {
       this.child.kill('SIGTERM');
     } catch {
@@ -214,6 +242,7 @@ export class WorkerProcess extends EventEmitter {
       const err = new WorkerError(msg.error ?? 'Unknown worker error', { trace: msg.trace });
       pending.reject(err);
     }
+    this.pump();
   }
 
   private handleStderr(chunk: string): void {
@@ -242,14 +271,21 @@ export class WorkerProcess extends EventEmitter {
   private markDead(err: Error): void {
     if (this.dead) return;
     this.dead = true;
-    // Bekleyen tüm istekleri reddet
+    this.rejectAll(new WorkerError(`Worker oldu: ${err.message}`));
+    this.emit('dead', err);
+  }
+
+  /** Aktif ve kuyruktaki tum istekleri reddet. */
+  private rejectAll(err: Error): void {
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(new WorkerError(`Worker oldu: ${err.message}`));
+      p.reject(err);
     }
     this.pending.clear();
+    for (const q of this.queue.splice(0)) {
+      q.reject(err);
+    }
     this.inflight = 0;
-    this.emit('dead', err);
   }
 
   private terminateAfterTimeout(err: Error): void {

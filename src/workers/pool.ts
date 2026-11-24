@@ -33,6 +33,8 @@ import type {
 const log = createLogger('worker-pool');
 
 export interface WorkerPoolOptions {
+  /** Log'larda havuzu ayirt etmek icin isim (orn. 'bots', 'jobs') */
+  name?: string;
   size?: number;
   /** Worker bir tick için max kaç ms bekleyebilir */
   tickTimeoutMs?: number;
@@ -44,10 +46,13 @@ interface InstanceMeta {
   workerIdx: number;
   strategyFile: string;
   params: Record<string, unknown>;
+  /** load_code ile yuklendiyse kaynak kod — worker olurse yeniden yuklemek icin */
+  sourceCode?: string;
 }
 
 export class WorkerPool {
   private workers: WorkerProcess[] = [];
+  private readonly name: string;
   private instanceMap = new Map<string, InstanceMeta>();
   private readonly size: number;
   private readonly tickTimeoutMs: number;
@@ -57,13 +62,14 @@ export class WorkerPool {
   private rrCursor = 0;
 
   constructor(opts: WorkerPoolOptions = {}) {
+    this.name = opts.name ?? 'bots';
     this.size = Math.max(1, opts.size ?? env.WORKER_POOL_SIZE);
     this.tickTimeoutMs = opts.tickTimeoutMs ?? env.WORKER_TIMEOUT_MS;
     this.backtestTimeoutMs = opts.backtestTimeoutMs ?? env.BACKTEST_WORKER_TIMEOUT_MS;
   }
 
   async start(): Promise<void> {
-    log.info({ size: this.size }, 'Worker pool baslatiliyor');
+    log.info({ pool: this.name, size: this.size }, 'Worker pool baslatiliyor');
     for (let i = 0; i < this.size; i++) {
       this.spawnAt(i);
     }
@@ -75,13 +81,13 @@ export class WorkerPool {
         })
       )
     );
-    log.info('Worker pool hazir');
+    log.info({ pool: this.name }, 'Worker pool hazir');
   }
 
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
-    log.info('Worker pool kapatiliyor');
+    log.info({ pool: this.name }, 'Worker pool kapatiliyor');
     await Promise.all(this.workers.map((w) => w.kill()));
     this.workers = [];
     this.instanceMap.clear();
@@ -130,7 +136,7 @@ export class WorkerPool {
         source_code: sourceCode,
         params,
       });
-      this.instanceMap.set(instanceId, { workerIdx: idx, strategyFile, params });
+      this.instanceMap.set(instanceId, { workerIdx: idx, strategyFile, params, sourceCode });
       worker.loadedInstances.add(instanceId);
       return data;
     } catch (err) {
@@ -239,7 +245,7 @@ export class WorkerPool {
     const w = new WorkerProcess();
     w.start();
     w.on('dead', (err) => {
-      log.warn({ idx, err: err.message }, 'Worker oldu, restart');
+      log.warn({ pool: this.name, idx, err: err.message }, 'Worker oldu, restart');
       if (this.shuttingDown) return;
       const old = this.workers[idx];
       const lostInstances = [...(old?.loadedInstances ?? [])];
@@ -252,12 +258,22 @@ export class WorkerPool {
         for (const instId of lostInstances) {
           const meta = this.instanceMap.get(instId);
           if (!meta) continue;
-          this.workers[idx]
-            ?.request('load', {
-              instance: instId,
-              strategy_file: meta.strategyFile,
-              params: meta.params,
-            })
+          // load_code ile yuklenen (kaydedilmemis) kod dosyadan bulunamaz;
+          // ayni kaynak kodla yeniden yukle.
+          const reload =
+            meta.sourceCode !== undefined
+              ? this.workers[idx]?.request('load_code', {
+                  instance: instId,
+                  strategy_file: meta.strategyFile,
+                  source_code: meta.sourceCode,
+                  params: meta.params,
+                })
+              : this.workers[idx]?.request('load', {
+                  instance: instId,
+                  strategy_file: meta.strategyFile,
+                  params: meta.params,
+                });
+          reload
             .then(() => {
               this.workers[idx]?.loadedInstances.add(instId);
               log.info({ instId, idx }, 'Instance yeniden yuklendi');
@@ -271,6 +287,9 @@ export class WorkerPool {
 
   /** En az yüklü worker'ı seç: kalıcı instance + anlık istek yükü. */
   private pickWorker(): number {
+    if (this.workers.length === 0) {
+      throw new WorkerError(`Worker pool (${this.name}) baslatilmadi`);
+    }
     let bestIdx = 0;
     let bestScore = Infinity;
     for (let i = 0; i < this.workers.length; i++) {
@@ -291,18 +310,33 @@ export class WorkerPool {
   }
 }
 
-/* ─── Singleton ────────────────────────────────────────── */
+/* ─── Singleton'lar ────────────────────────────────────── */
 
+/**
+ * Iki ayri havuz var:
+ *   - bots: canli/paper botlarin tick/draw istekleri (kisa, zamana duyarli)
+ *   - jobs: backtest, indikator/strateji cizimi, kod dogrulama (uzun surebilir)
+ *
+ * Python worker'lari tek is parcacikli oldugu icin 15 dakikalik bir backtest
+ * bot tick'leriyle ayni worker'i paylasirsa tick'ler timeout'a duser ve worker
+ * oldurulur. Ayri havuz bunu engeller.
+ */
 let pool: WorkerPool | null = null;
+let jobPool: WorkerPool | null = null;
 
 export function getWorkerPool(): WorkerPool {
-  if (!pool) pool = new WorkerPool();
+  if (!pool) pool = new WorkerPool({ name: 'bots' });
   return pool;
 }
 
+export function getJobWorkerPool(): WorkerPool {
+  if (!jobPool) jobPool = new WorkerPool({ name: 'jobs', size: env.JOB_WORKER_POOL_SIZE });
+  return jobPool;
+}
+
 export async function shutdownWorkerPool(): Promise<void> {
-  if (pool) {
-    await pool.shutdown();
-    pool = null;
-  }
+  const pools = [pool, jobPool].filter((p): p is WorkerPool => p !== null);
+  pool = null;
+  jobPool = null;
+  await Promise.all(pools.map((p) => p.shutdown()));
 }

@@ -30,6 +30,8 @@ const envSchema = z.object({
 
   PYTHON_BIN: z.string().default('python3'),
   WORKER_POOL_SIZE: z.coerce.number().int().min(1).max(32).default(4),
+  /** Backtest/cizim/dogrulama icin ayri havuz (bot tick'lerini bloklamasin) */
+  JOB_WORKER_POOL_SIZE: z.coerce.number().int().min(1).max(16).default(2),
   WORKER_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   BACKTEST_WORKER_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
 });

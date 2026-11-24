@@ -13,7 +13,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { getStrategyService } from '../services/strategies.js';
 import { asyncHandler } from './middleware.js';
-import { getWorkerPool } from '../workers/pool.js';
+import { getJobWorkerPool as getWorkerPool } from '../workers/pool.js';
 import { candleToRaw } from '../workers/types.js';
 import type { Candle } from '../types/domain.js';
 
