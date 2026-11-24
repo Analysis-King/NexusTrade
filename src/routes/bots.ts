@@ -75,7 +75,7 @@ const profileGateDeploySchema = z.object({
   takeProfitPct: z.number().min(0.1).max(100).default(4),
   dailyMaxLossPct: z.number().min(0.1).max(100).default(6),
   stopLossMode: z.enum(['percent', 'target_ratio', 'strategy']).default('strategy'),
-  stopLossTargetRatio: z.number().min(0.1).max(10).default(1),
+  stopLossTargetRatio: z.number().min(0.1).max(10).default(0.2),
   leverage: z.number().min(1).max(10).optional(),
   start: z.boolean().default(false),
 });
@@ -104,7 +104,7 @@ botRouter.get(
       takeProfitPct: 4,
       dailyMaxLossPct: 6,
       stopLossMode: 'strategy',
-      stopLossTargetRatio: 1,
+      stopLossTargetRatio: 0.2,
     });
     res.json({ ok: true, data: { ...gate, drafts } });
   })

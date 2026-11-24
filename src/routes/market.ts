@@ -28,6 +28,8 @@ export const marketRouter = Router();
 
 // Tüm public endpoint'ler için tek bir paylaşılan client yeterli
 const publicClient = BinanceClient.public();
+const BINANCE_KLINES_PAGE_LIMIT = 1000;
+const MAX_KLINES_LIMIT = 5000;
 
 const symbolSchema = z
   .string()
@@ -40,6 +42,43 @@ const intervalSchema = z.enum([
   '1h', '2h', '4h', '6h', '8h', '12h',
   '1d', '3d', '1w', '1M',
 ]);
+
+type MarketInterval = z.infer<typeof intervalSchema>;
+
+async function fetchKlinesPaged(
+  symbol: string,
+  interval: MarketInterval,
+  limit: number
+): Promise<BinanceKlineRaw[]> {
+  if (limit <= BINANCE_KLINES_PAGE_LIMIT) {
+    return publicClient.klines({ symbol, interval, limit });
+  }
+
+  const batches: BinanceKlineRaw[][] = [];
+  let remaining = limit;
+  let endTime: number | undefined;
+
+  while (remaining > 0) {
+    const batchLimit = Math.min(BINANCE_KLINES_PAGE_LIMIT, remaining);
+    const batch = await publicClient.klines({
+      symbol,
+      interval,
+      limit: batchLimit,
+      endTime,
+    });
+
+    if (batch.length === 0) break;
+
+    batches.unshift(batch);
+    remaining -= batch.length;
+
+    const firstOpenTime = batch[0]?.[0];
+    if (!Number.isFinite(firstOpenTime) || batch.length < batchLimit) break;
+    endTime = firstOpenTime - 1;
+  }
+
+  return batches.flat().slice(-limit);
+}
 
 /* ─── /price/:symbol ───────────────────────────────────── */
 marketRouter.get(
@@ -89,10 +128,10 @@ marketRouter.get(
   asyncHandler(async (req, res) => {
     const symbol = symbolSchema.parse(req.params.symbol);
     const interval = intervalSchema.parse(req.query.interval ?? '1h');
-    const limit = z.coerce.number().int().min(1).max(1000).default(200).parse(req.query.limit);
+    const limit = z.coerce.number().int().min(1).max(MAX_KLINES_LIMIT).default(1000).parse(req.query.limit);
     const format = z.enum(['raw', 'candle']).default('candle').parse(req.query.format);
 
-    const raw = await publicClient.klines({ symbol, interval, limit }).catch(async () => {
+    const raw = await fetchKlinesPaged(symbol, interval, limit).catch(async () => {
       const fallback = await fallbackKlines({ symbol, interval, limit });
       return fallback.map((candle): BinanceKlineRaw => [
         candle.openTime,

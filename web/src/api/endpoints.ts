@@ -7,6 +7,7 @@ import type {
   BotConfig,
   BotSnapshot,
   Candle,
+  StrategyDrawing,
   Interval,
   OrderBook,
   RecentTrade,
@@ -29,7 +30,7 @@ export const marketApi = {
     api.get<OrderBook>(`/market/orderbook/${symbol}?limit=${limit}`),
   recentTrades: (symbol: string, limit = 50) =>
     api.get<RecentTrade[]>(`/market/trades/${symbol}?limit=${limit}`),
-  klines: (symbol: string, interval: Interval, limit = 500) =>
+  klines: (symbol: string, interval: Interval, limit = 5000) =>
     api.get<Candle[]>(`/market/klines/${symbol}?interval=${interval}&limit=${limit}`),
 };
 
@@ -122,6 +123,10 @@ export const botsApi = {
     api.get<Trade[]>(`/bots/${id}/trades?limit=${limit}`),
 };
 
+export const paperPortfoliosApi = {
+  list: () => api.get<import('@/types/api').PaperPortfolioReport[]>('/paper-portfolios'),
+};
+
 /* ─── Strategies ───────────────────────────────────────── */
 
 export interface StrategyMeta {
@@ -152,6 +157,11 @@ export const strategiesApi = {
   save: (filename: string, code: string) => api.post<StrategyMeta>('/strategies', { filename, code }),
   validate: (filename: string, code: string) =>
     api.post<StrategyValidation>('/strategies/validate', { filename, code }),
+  draw: (filename: string, input: { candles: Candle[]; params?: Record<string, unknown> }) =>
+    api.post<{ drawings: StrategyDrawing[] }>(
+      `/strategies/${encodeURIComponent(filename)}/draw`,
+      input
+    ),
 };
 
 export interface IndicatorMeta {

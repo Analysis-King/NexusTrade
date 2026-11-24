@@ -1,4 +1,6 @@
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const DAY = 86_400_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -589,6 +591,107 @@ function buildMomentumCandidateCases() {
     short_regime: 'bear',
     exit_on_opposite_signal: true,
   });
+  for (const reward_risk of [1.2, 1.5, 2.0]) {
+    add(`Mined 4h signal edge both rr${reward_risk}`, 'mined_reversal_edge.py', {
+      allow_long: true,
+      allow_short: true,
+      long_rsi_max: 30,
+      long_stoch_min: 20,
+      long_stoch_max: 40,
+      long_min_bb_width: 10,
+      short_rsi_min: 50,
+      short_rsi_max: 60,
+      short_stoch_min: 60,
+      short_stoch_max: 80,
+      short_min_bb_width: 5,
+      short_max_bb_width: 10,
+      require_long_macd_recovery: false,
+      require_short_macd_fade: false,
+      htf_filter: true,
+      htf_hours: 4,
+      long_htf_regime: 'strong_bear',
+      short_htf_regime: 'strong_bear',
+      reward_risk,
+      min_stop_pct: 0.35,
+      max_stop_pct: 1.4,
+      cooldown_bars: 6,
+      max_hold_bars: 12,
+      exit_on_momentum_loss: false,
+      exit_on_opposite_signal: true,
+    });
+    add(`Mined 4h signal edge long rr${reward_risk}`, 'mined_reversal_edge.py', {
+      allow_long: true,
+      allow_short: false,
+      long_rsi_max: 30,
+      long_stoch_min: 20,
+      long_stoch_max: 40,
+      long_min_bb_width: 10,
+      require_long_macd_recovery: false,
+      htf_filter: true,
+      htf_hours: 4,
+      long_htf_regime: 'strong_bear',
+      reward_risk,
+      min_stop_pct: 0.35,
+      max_stop_pct: 1.4,
+      cooldown_bars: 6,
+      max_hold_bars: 12,
+      exit_on_momentum_loss: false,
+      exit_on_opposite_signal: true,
+    });
+    add(`Mined 4h signal edge short rr${reward_risk}`, 'mined_reversal_edge.py', {
+      allow_long: false,
+      allow_short: true,
+      short_rsi_min: 50,
+      short_rsi_max: 60,
+      short_stoch_min: 60,
+      short_stoch_max: 80,
+      short_min_bb_width: 5,
+      short_max_bb_width: 10,
+      require_short_macd_fade: false,
+      htf_filter: true,
+      htf_hours: 4,
+      short_htf_regime: 'strong_bear',
+      reward_risk,
+      min_stop_pct: 0.35,
+      max_stop_pct: 1.4,
+      cooldown_bars: 6,
+      max_hold_bars: 12,
+      exit_on_momentum_loss: false,
+      exit_on_opposite_signal: true,
+    });
+  }
+
+  for (const breakout_period of [20, 34]) {
+    for (const ema_period of [100, 200]) {
+      for (const min_volume_ratio of [1.1, 1.5]) {
+        const base = {
+          breakout_period,
+          ema_period,
+          adx_period: 14,
+          adx_min: 16,
+          volume_period: 30,
+          min_volume_ratio,
+          atr_period: 14,
+          stop_atr: 1.15,
+          reward_risk: 2.4,
+          max_hold_bars: 72,
+          cooldown_bars: 1,
+          use_take_profit: true,
+          exit_on_opposite_signal: true,
+        };
+        add(`Donchian long br${breakout_period} ema${ema_period} vol${min_volume_ratio}`, 'donchian_momentum.py', {
+          ...base,
+          allow_long: true,
+          allow_short: false,
+        });
+        add(`Donchian short br${breakout_period} ema${ema_period} vol${min_volume_ratio}`, 'donchian_momentum.py', {
+          ...base,
+          allow_long: false,
+          allow_short: true,
+        });
+      }
+    }
+  }
 
   for (const mode of ['supertrend', 'hma_supertrend', 'pmax', 'alpha_trend', 'chandelier', 'range_filter', 'ut_bot']) {
     add(`TV ${mode} long ema100`, 'tradingview_popular_suite.py', {
@@ -930,6 +1033,52 @@ function buildInternetTop10Cases() {
         allow_short: true,
         cooldown_bars: 8,
         exit_on_midline: true,
+      },
+    },
+    {
+      name: 'Research 11 AdaptiveTrend H6',
+      file: 'adaptive_trend_momentum.py',
+      params: {
+        momentum_lookback: 28,
+        long_threshold_pct: 3.0,
+        short_threshold_pct: 4.0,
+        initial_stop_atr: 2.5,
+        trail_atr: 2.5,
+        allow_long: true,
+        allow_short: true,
+        cooldown_bars: 4,
+        use_regime_filter: false,
+      },
+    },
+    {
+      name: 'Research 12 AdaptiveTrend Slow',
+      file: 'adaptive_trend_momentum.py',
+      params: {
+        momentum_lookback: 56,
+        long_threshold_pct: 5.0,
+        short_threshold_pct: 6.0,
+        initial_stop_atr: 3.0,
+        trail_atr: 3.0,
+        allow_long: true,
+        allow_short: true,
+        cooldown_bars: 6,
+        use_regime_filter: false,
+      },
+    },
+    {
+      name: 'Research 13 AdaptiveTrend Regime',
+      file: 'adaptive_trend_momentum.py',
+      params: {
+        momentum_lookback: 28,
+        long_threshold_pct: 3.0,
+        short_threshold_pct: 4.0,
+        initial_stop_atr: 2.5,
+        trail_atr: 2.5,
+        allow_long: true,
+        allow_short: true,
+        cooldown_bars: 4,
+        use_regime_filter: true,
+        regime_ema_period: 100,
       },
     },
   ];
@@ -1595,6 +1744,121 @@ async function main() {
         netPnl: row.netPnl,
       })));
       console.log(JSON.stringify({ interval, days, targetCount: symbols.length, leverage: LEVERAGE, compound: COMPOUND, summary: byVariant, top: rows.slice(0, 50), patternSummary, detailSummary, failures }, null, 2));
+      return;
+    }
+
+    if (mode === 'harmonic-target-compare') {
+      const interval = process.argv[3] || '1h';
+      const days = Number(process.argv[4] || 90);
+      const targetCount = Number(process.argv[5] || 50);
+      const symbols = (await fetchTopUsdtSymbols(Math.max(targetCount * 2, 90))).slice(0, targetCount);
+      const tradeFilters = [
+        { pattern: 'Gartley', zigzag_length: 5, direction: 'bullish' },
+        { pattern: 'Gartley', zigzag_length: 5, direction: 'bearish' },
+        { pattern: 'Cypher', zigzag_length: 5, direction: 'bullish' },
+        { pattern: 'Black Swan', zigzag_length: 10, direction: 'bullish' },
+        { pattern: 'Black Swan', zigzag_length: 15, direction: 'bearish' },
+        { pattern: 'Derin Yengec', zigzag_length: 5, direction: 'bullish' },
+      ];
+      const baseParams = {
+        allow_repaint: true,
+        wait_for_confirmation: false,
+        allow_short: true,
+        recent_signal_bars: 3,
+        entry_confirmation_mode: 'off',
+        exit_mode: 'single',
+        stop_loss_mode: 'target_ratio',
+        stop_loss_target_ratio: 0.2,
+        min_reward_risk: 0.5,
+        trade_filters: tradeFilters,
+      };
+      const variants = [
+        ['Hedef 1', { ...baseParams, take_profit_mode: 'target_1' }],
+        ['Hedef 2', { ...baseParams, take_profit_mode: 'target_2' }],
+      ];
+      const rows = [];
+      const failures = [];
+      const patternStats = new Map();
+
+      console.log(`Harmonik hedef karsilastirma: ${interval}, ${days} gun, ${symbols.length} sembol, leverage=${LEVERAGE}`);
+      let completed = 0;
+      for (const symbol of symbols) {
+        try {
+          const candles = await fetchCandles(symbol, interval, days);
+          if (candles.length < 300) {
+            failures.push({ symbol, reason: `az mum: ${candles.length}` });
+            continue;
+          }
+          for (const [variant, params] of variants) {
+            const row = await runCaseFull(request, candles, {
+              name: `Harmonik ${variant}`,
+              file: 'pine_harmonic_patterns.py',
+              params,
+            });
+            const enriched = attachBenchmark({ variant, symbol, interval, days, ...row }, candles, days);
+            rows.push(enriched);
+            addTradePatternStats(patternStats, variant, symbol, row.rawTrades);
+          }
+          completed += 1;
+          if (completed % 5 === 0) console.log(`${completed}/${symbols.length} sembol tamamlandi`);
+        } catch (err) {
+          failures.push({ symbol, reason: err.message || String(err) });
+        }
+      }
+
+      const summary = variants.map(([variant]) => {
+        const group = rows.filter((row) => row.variant === variant);
+        const totalTrades = group.reduce((sum, row) => sum + Number(row.trades || 0), 0);
+        const weightedWins = group.reduce((sum, row) => sum + Number(row.win || 0) * Number(row.trades || 0), 0);
+        return {
+          variant,
+          symbols: group.length,
+          profitableSymbols: group.filter((row) => row.ret > 0).length,
+          profitableSymbolsPct: pct(group.filter((row) => row.ret > 0).length, group.length),
+          avgReturnPct: average(group.map((row) => row.ret)),
+          medianReturnPct: median(group.map((row) => row.ret)),
+          avgDailyCompoundPct: average(group.map((row) => row.dailyCompound)),
+          medianDailyCompoundPct: median(group.map((row) => row.dailyCompound)),
+          weightedWinRatePct: totalTrades ? weightedWins / totalTrades : 0,
+          totalTrades,
+          avgTrades: average(group.map((row) => row.trades)),
+          avgProfitFactor: average(group.map((row) => row.pf)),
+          avgMaxDrawdownPct: average(group.map((row) => row.dd)),
+        };
+      });
+      const report = {
+        generatedAt: new Date().toISOString(),
+        interval,
+        days,
+        leverage: LEVERAGE,
+        feeBpsPerSide: 10,
+        slippageBpsPerSide: 2,
+        fillModel: 'pessimistic_ohlc',
+        symbols,
+        baseParams,
+        summary,
+        patternSummary: finalizePatternStats(patternStats, 'pattern'),
+        detailSummary: finalizePatternStats(patternStats, 'detail'),
+        rows: rows.map(({ rawTrades, observations, observationStats, ...row }) => row),
+        failures,
+      };
+      const stamp = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+      const output = path.join('data', `harmonic_target_compare_${symbols.length}_${interval}_${days}d_${stamp}.json`);
+      fs.writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+
+      console.table(summary.map((row) => ({
+        hedef: row.variant,
+        sembol: row.symbols,
+        karli: `${row.profitableSymbols}/${row.symbols}`,
+        ortGetiri: Number(row.avgReturnPct?.toFixed(2)),
+        medGetiri: Number(row.medianReturnPct?.toFixed(2)),
+        ortGunluk: Number(row.avgDailyCompoundPct?.toFixed(3)),
+        winRate: Number(row.weightedWinRatePct?.toFixed(2)),
+        islemler: row.totalTrades,
+        PF: Number(row.avgProfitFactor?.toFixed(2)),
+        maxDD: Number(row.avgMaxDrawdownPct?.toFixed(2)),
+      })));
+      console.log(`Rapor: ${output}`);
       return;
     }
 

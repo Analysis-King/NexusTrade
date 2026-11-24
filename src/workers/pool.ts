@@ -1,7 +1,7 @@
 /**
  * Python worker pool — birden fazla pool_worker.py process'ini yönetir.
  *
- * - Pool size: default `os.cpus().length` ama default 2 (CPU paylaşımı önemli)
+ * - Pool size: ortam ayarindan gelir; botlar en az yuklu worker'a dagitilir
  * - Round-robin instance dağıtımı: yeni bot eklendiğinde en az yüklü worker'a gider
  * - Bir process ölürse otomatik restart, instance'ları yeniden yükle
  * - Graceful shutdown: SIGTERM, sonra timeout → SIGKILL
@@ -57,8 +57,8 @@ export class WorkerPool {
   private rrCursor = 0;
 
   constructor(opts: WorkerPoolOptions = {}) {
-    this.size = Math.max(1, opts.size ?? 2);
-    this.tickTimeoutMs = opts.tickTimeoutMs ?? 5_000;
+    this.size = Math.max(1, opts.size ?? env.WORKER_POOL_SIZE);
+    this.tickTimeoutMs = opts.tickTimeoutMs ?? env.WORKER_TIMEOUT_MS;
     this.backtestTimeoutMs = opts.backtestTimeoutMs ?? env.BACKTEST_WORKER_TIMEOUT_MS;
   }
 

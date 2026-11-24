@@ -18,6 +18,7 @@ import { healthRouter } from './routes/health.js';
 import { indicatorRouter } from './routes/indicators.js';
 import { marketRouter } from './routes/market.js';
 import { errorHandler, notFoundHandler, requestLogger } from './routes/middleware.js';
+import { paperPortfolioRouter } from './routes/paperPortfolios.js';
 import { strategyRouter } from './routes/strategies.js';
 
 export function createApp(): Express {
@@ -73,6 +74,7 @@ export function createApp(): Express {
   app.use('/api/market', marketRouter);
   app.use('/api/indicators', indicatorRouter);
   app.use('/api/bots', botRouter);
+  app.use('/api/paper-portfolios', paperPortfolioRouter);
   app.use('/api/strategies', strategyRouter);
   app.use('/api/backtests', backtestRouter);
 

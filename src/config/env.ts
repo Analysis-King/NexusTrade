@@ -29,6 +29,7 @@ const envSchema = z.object({
   PORTFOLIO_PROFILE_REPORT: z.string().default('./data/orphan_market_reader_portfolio_optimizer_lev3.json'),
 
   PYTHON_BIN: z.string().default('python3'),
+  WORKER_POOL_SIZE: z.coerce.number().int().min(1).max(32).default(4),
   WORKER_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   BACKTEST_WORKER_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
 });

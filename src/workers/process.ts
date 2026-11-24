@@ -74,6 +74,18 @@ export class WorkerProcess extends EventEmitter {
 
     this.child.stdout?.on('data', (chunk: string) => this.handleStdout(chunk));
     this.child.stderr?.on('data', (chunk: string) => this.handleStderr(chunk));
+    this.child.stdin?.on('error', (err) => {
+      log.warn({ err: err.message }, 'Python stdin write error');
+      this.markDead(err);
+    });
+    this.child.stdout?.on('error', (err) => {
+      log.warn({ err: err.message }, 'Python stdout error');
+      this.markDead(err);
+    });
+    this.child.stderr?.on('error', (err) => {
+      log.warn({ err: err.message }, 'Python stderr error');
+      this.markDead(err);
+    });
 
     this.child.on('error', (err) => {
       log.error({ err }, 'Python process error');
@@ -113,10 +125,29 @@ export class WorkerProcess extends EventEmitter {
       this.inflight++;
 
       const line = JSON.stringify({ id, cmd, ...payload }) + '\n';
-      const ok = this.child!.stdin?.write(line);
-      if (!ok) {
-        // Backpressure — sadece logla, drain bekleyelim
-        this.child!.stdin?.once('drain', () => {});
+      const stdin = this.child?.stdin;
+      if (!stdin || stdin.destroyed || !stdin.writable) {
+        this.pending.delete(id);
+        this.inflight = Math.max(0, this.inflight - 1);
+        clearTimeout(timer);
+        const err = new WorkerError('Worker stdin kapali, istek gonderilemez');
+        reject(err);
+        this.markDead(err);
+        return;
+      }
+
+      try {
+        const ok = stdin.write(line);
+        if (!ok) {
+          stdin.once('drain', () => {});
+        }
+      } catch (err) {
+        this.pending.delete(id);
+        this.inflight = Math.max(0, this.inflight - 1);
+        clearTimeout(timer);
+        const error = err instanceof Error ? err : new Error(String(err));
+        reject(error);
+        this.markDead(error);
       }
     });
   }

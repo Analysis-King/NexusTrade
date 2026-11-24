@@ -22,12 +22,42 @@ export interface CandleRaw {
   v: number;
 }
 
+export interface FootprintLevelRaw {
+  price: number;
+  buy_volume: number;
+  sell_volume: number;
+  delta: number;
+  total_volume: number;
+  buy_trades: number;
+  sell_trades: number;
+}
+
+export interface FootprintRaw {
+  t: number;
+  complete: boolean;
+  trades: number;
+  buy_trades: number;
+  sell_trades: number;
+  buy_volume: number;
+  sell_volume: number;
+  delta: number;
+  total_volume: number;
+  buy_notional: number;
+  sell_notional: number;
+  delta_notional: number;
+  total_notional: number;
+  poc_price: number | null;
+  levels: FootprintLevelRaw[];
+}
+
 export type Signal = 'buy' | 'sell' | 'close' | 'hold';
 
 export interface TickRequest {
   instance: string;
   candle: CandleRaw;
   candles: CandleRaw[];
+  footprint?: FootprintRaw | null;
+  footprints?: FootprintRaw[];
   portfolio: PortfolioState;
 }
 
@@ -37,6 +67,7 @@ export interface TickResponse {
   tp_pct: number | null;
   sl_price?: number | null;
   tp_price?: number | null;
+  meta?: Record<string, unknown>;
   observations?: unknown[];
   drawings: unknown[];
 }
@@ -66,6 +97,9 @@ export interface LoadCodeRequest {
 export interface LoadResponse {
   config: Record<string, unknown>;
   file: string;
+  capabilities?: {
+    footprint?: boolean;
+  };
 }
 
 export interface ValidateStrategyResponse {
@@ -82,6 +116,7 @@ export interface ValidateStrategyResponse {
 export interface BacktestRequest {
   instance: string;
   candles: CandleRaw[];
+  footprints?: FootprintRaw[];
   initial_capital?: number;
   fee_bps?: number;
   slippage_bps?: number;

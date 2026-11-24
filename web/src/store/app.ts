@@ -14,15 +14,22 @@ export type Interval =
 
 export type DrawingMode = 'hidden' | 'latest' | 'all';
 
+export interface PaperPositionSelection {
+  sourceFile: string;
+  positionId: string;
+}
+
 interface AppState {
   symbol: string;
   interval: Interval;
   selectedBotId: string | null;
+  selectedPaperPosition: PaperPositionSelection | null;
   drawingMode: DrawingMode;
   activeIndicatorIds: string[];
   setSymbol: (s: string) => void;
   setInterval: (i: Interval) => void;
   setSelectedBotId: (id: string | null) => void;
+  setSelectedPaperPosition: (selection: PaperPositionSelection | null) => void;
   setDrawingMode: (mode: DrawingMode) => void;
   toggleIndicator: (id: string) => void;
 }
@@ -31,11 +38,13 @@ export const useAppStore = create<AppState>((set) => ({
   symbol: 'BTCUSDT',
   interval: '15m',
   selectedBotId: null,
+  selectedPaperPosition: null,
   drawingMode: 'latest',
   activeIndicatorIds: [],
   setSymbol: (symbol) => set({ symbol: symbol.toUpperCase() }),
   setInterval: (interval) => set({ interval }),
-  setSelectedBotId: (selectedBotId) => set({ selectedBotId }),
+  setSelectedBotId: (selectedBotId) => set({ selectedBotId, selectedPaperPosition: null }),
+  setSelectedPaperPosition: (selectedPaperPosition) => set({ selectedPaperPosition, selectedBotId: null }),
   setDrawingMode: (drawingMode) => set({ drawingMode }),
   toggleIndicator: (id) =>
     set((state) => ({

@@ -139,6 +139,10 @@ function indicators(candles, cfg) {
     const w = candles.slice(Math.max(0, i - cfg.breakoutPeriod), i);
     return w.length ? Math.max(...w.map((c) => c.h)) : candles[i].h;
   });
+  const donchianLow = candles.map((_, i) => {
+    const w = candles.slice(Math.max(0, i - cfg.breakoutPeriod), i);
+    return w.length ? Math.min(...w.map((c) => c.l)) : candles[i].l;
+  });
   const roc = close.map((value, i) => {
     if (i < cfg.rocPeriod || close[i - cfg.rocPeriod] <= 0) return 0;
     return (value / close[i - cfg.rocPeriod] - 1) * 100;
@@ -156,7 +160,7 @@ function indicators(candles, cfg) {
     }
     dayGain.push(low > 0 ? (candle.c / low - 1) * 100 : 0);
   }
-  return { emaFast, emaSlow, atr, rsi, stoch, macdHist, bbWidth, volSma, donchianHigh, roc, dayGain };
+  return { emaFast, emaSlow, atr, rsi, stoch, macdHist, bbWidth, volSma, donchianHigh, donchianLow, roc, dayGain };
 }
 
 function buildConfigs() {
@@ -209,6 +213,32 @@ function buildConfigs() {
     add(`mined strict pos${maxPositions}`, { signalType: 'minedStrictLong', maxPositions, direction: 'long', rewardRisk: 1.8, minStopPct: 0.35, maxStopPct: 1.4, maxHoldBars: 999, cooldownBars: 6, trailing: false });
     add(`mined v1 pos${maxPositions}`, { signalType: 'minedLong', maxPositions, direction: 'long', rewardRisk: 1.5, minStopPct: 0.35, maxStopPct: 1.4, maxHoldBars: 999, cooldownBars: 6, trailing: false });
   }
+  for (const breakoutPeriod of [12, 24, 48]) {
+    for (const slowEma of [55, 100, 200]) {
+      for (const maxPositions of [2, 4, 6]) {
+        for (const stopAtr of [1.5, 2.2]) {
+          for (const trailAtr of [2, 3]) {
+            add(`trend both b${breakoutPeriod} e${slowEma} p${maxPositions} s${stopAtr} t${trailAtr}`, {
+              signalType: 'trendBoth',
+              breakoutPeriod,
+              fastEma: 21,
+              slowEma,
+              maxPositions,
+              stopAtr,
+              trailAtr,
+              minStopPct: 0.4,
+              maxStopPct: 4,
+              minVolumeRatio: 0.8,
+              maxHoldBars: 999,
+              cooldownBars: 2,
+              trailing: true,
+              useTakeProfit: false,
+            });
+          }
+        }
+      }
+    }
+  }
   return configs;
 }
 
@@ -217,6 +247,23 @@ function signalFor(row, idx, cfg) {
   if (idx < Math.max(cfg.slowEma, cfg.breakoutPeriod, cfg.rsiPeriod, cfg.atrPeriod) + 2) return null;
   const close = candle.c;
   const atrPct = close > 0 ? ind.atr[idx] / close * 100 : 0;
+  if (cfg.signalType === 'trendBoth') {
+    const volumeRatio = ind.volSma[idx] > 0 ? candle.v / ind.volSma[idx] : 0;
+    const longBreakout = close > ind.donchianHigh[idx] && close > ind.emaFast[idx] && ind.emaFast[idx] > ind.emaSlow[idx];
+    const shortBreakout = close < ind.donchianLow[idx] && close < ind.emaFast[idx] && ind.emaFast[idx] < ind.emaSlow[idx];
+    if (volumeRatio < cfg.minVolumeRatio || atrPct < cfg.minAtrPct || atrPct > cfg.maxAtrPct) return null;
+    if (!longBreakout && !shortBreakout) return null;
+    const breakoutDistance = longBreakout
+      ? (close - ind.donchianHigh[idx]) / Math.max(ind.atr[idx], 1e-12)
+      : (ind.donchianLow[idx] - close) / Math.max(ind.atr[idx], 1e-12);
+    return {
+      side: longBreakout ? 'long' : 'short',
+      score: breakoutDistance * 2 + volumeRatio + Math.abs(ind.emaFast[idx] / ind.emaSlow[idx] - 1) * 100,
+      atr: ind.atr[idx],
+      atrPct,
+      volumeRatio,
+    };
+  }
   if (cfg.signalType === 'minedStrictLong' || cfg.signalType === 'minedLong') {
     const prevMacd = ind.macdHist[idx - 1] ?? ind.macdHist[idx];
     const rsiMax = cfg.signalType === 'minedStrictLong' ? 30 : 30;
@@ -327,11 +374,11 @@ function simulate(dataset, cfg, days) {
       position.bars += 1;
       if (position.trailing && position.side === 'short') {
         position.high = Math.min(position.high, candle.l);
-        const trail = position.high + item.ind.atr[item.idx] * 1.2;
+        const trail = position.high + item.ind.atr[item.idx] * (cfg.trailAtr || 1.2);
         position.sl = Math.min(position.sl, trail);
       } else if (position.trailing) {
         position.high = Math.max(position.high, candle.h);
-        const trail = position.high - item.ind.atr[item.idx] * 1.2;
+        const trail = position.high - item.ind.atr[item.idx] * (cfg.trailAtr || 1.2);
         position.sl = Math.max(position.sl, trail);
       }
       let exit = null;
@@ -343,13 +390,13 @@ function simulate(dataset, cfg, days) {
       } else if (position.side === 'short' && candle.h >= position.sl) {
         exit = position.sl * (1 + slip);
         reason = 'sl';
-      } else if (position.side === 'short' && candle.l <= position.tp) {
+      } else if (cfg.useTakeProfit !== false && position.side === 'short' && candle.l <= position.tp) {
         exit = position.tp * (1 + slip);
         reason = 'tp';
       } else if (position.side !== 'short' && candle.l <= position.sl) {
         exit = position.sl * (1 - slip);
         reason = 'sl';
-      } else if (position.side !== 'short' && candle.h >= position.tp) {
+      } else if (cfg.useTakeProfit !== false && position.side !== 'short' && candle.h >= position.tp) {
         exit = position.tp * (1 - slip);
         reason = 'tp';
       } else if (position.bars >= cfg.maxHoldBars) {

@@ -38,7 +38,7 @@ internal static class Program
 
         if (!IsReady(BackendUrl, BackendPort))
         {
-            StartServerWindow("NexusTrade Backend", root, "npm.cmd run dev");
+            StartServerWindow("NexusTrade Backend", root, BackendCommand(root));
         }
         else
         {
@@ -55,7 +55,7 @@ internal static class Program
 
         if (!IsReady(WebUrl, WebPort))
         {
-            StartServerWindow("NexusTrade Web", webRoot, "npm.cmd run dev");
+            StartServerWindow("NexusTrade Web", root, WebCommand(root));
         }
         else
         {
@@ -110,12 +110,22 @@ internal static class Program
     {
         ProcessStartInfo psi = new ProcessStartInfo();
         psi.FileName = "cmd.exe";
-        psi.Arguments = "/d /k \"title " + title + " && cd /d " + QuoteForCmd(workingDirectory) + " && " + command + "\"";
+        psi.Arguments = "/d /k " + command;
         psi.WorkingDirectory = workingDirectory;
         psi.UseShellExecute = true;
 
         Process.Start(psi);
         Console.WriteLine(title + " penceresi acildi.");
+    }
+
+    private static string BackendCommand(string root)
+    {
+        return "scripts\\start-backend.cmd";
+    }
+
+    private static string WebCommand(string root)
+    {
+        return "scripts\\start-web.cmd";
     }
 
     private static void WaitForServers(TimeSpan timeout)

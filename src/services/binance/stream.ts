@@ -86,6 +86,7 @@ export class BinanceStreamManager extends EventEmitter {
   private readonly subscriptions = new Map<string, number>(); // stream → refCount
   private connected = false;
   private connecting = false;
+  private connectingStartedAt = 0;
   private reconnectAttempt = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pingInterval: NodeJS.Timeout | null = null;
@@ -128,8 +129,10 @@ export class BinanceStreamManager extends EventEmitter {
       if (this.connected && this.ws) {
         this.sendSubscribe([key]);
       } else {
-        this.connect();
+        this.ensureConnected();
       }
+    } else if (!this.connected) {
+      this.ensureConnected();
     }
 
     let unsubscribed = false;
@@ -149,9 +152,49 @@ export class BinanceStreamManager extends EventEmitter {
 
   /* ─── Connection lifecycle ─────────────────────────────── */
 
+  /** Birden fazla stream'i tek baglanti acilisinda atomik olarak abone eder. */
+  subscribeMany(streams: string[]): () => void {
+    const keys = [...new Set(streams.map((stream) => stream.toLowerCase()))];
+    const newlyAdded: string[] = [];
+    for (const key of keys) {
+      const count = this.subscriptions.get(key) ?? 0;
+      this.subscriptions.set(key, count + 1);
+      if (count === 0) newlyAdded.push(key);
+    }
+
+    if (newlyAdded.length > 0) {
+      if (this.connected && this.ws) {
+        this.sendSubscribe(newlyAdded);
+      } else {
+        this.ensureConnected();
+      }
+    } else if (!this.connected) {
+      this.ensureConnected();
+    }
+
+    let unsubscribed = false;
+    return () => {
+      if (unsubscribed) return;
+      unsubscribed = true;
+      const removed: string[] = [];
+      for (const key of keys) {
+        const count = this.subscriptions.get(key) ?? 0;
+        if (count <= 1) {
+          this.subscriptions.delete(key);
+          removed.push(key);
+        } else {
+          this.subscriptions.set(key, count - 1);
+        }
+      }
+      if (removed.length > 0 && this.connected && this.ws) this.sendUnsubscribe(removed);
+      if (this.subscriptions.size === 0) this.disconnect();
+    };
+  }
+
   private connect(): void {
     if (this.connecting || this.connected) return;
     this.connecting = true;
+    this.connectingStartedAt = Date.now();
 
     const streams = [...this.subscriptions.keys()].join('/');
     const url = streams
@@ -160,12 +203,13 @@ export class BinanceStreamManager extends EventEmitter {
 
     log.info({ streams: this.subscriptions.size }, 'Binance WS bağlanıyor');
 
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, { handshakeTimeout: 15_000 });
     this.ws = ws;
 
     ws.on('open', () => {
       this.connected = true;
       this.connecting = false;
+      this.connectingStartedAt = 0;
       this.reconnectAttempt = 0;
       this.startPing();
       log.info('Binance WS bağlandı');
@@ -180,6 +224,13 @@ export class BinanceStreamManager extends EventEmitter {
 
     ws.on('error', (err) => {
       log.warn({ err: err.message }, 'Binance WS hata');
+      if (this.ws === ws && ws.readyState !== WebSocket.CLOSED) {
+        try {
+          ws.terminate();
+        } catch {
+          // close event temizligi tamamlar
+        }
+      }
     });
 
     ws.on('close', (code, reason) => {
@@ -220,11 +271,30 @@ export class BinanceStreamManager extends EventEmitter {
   private cleanup(): void {
     this.connected = false;
     this.connecting = false;
+    this.connectingStartedAt = 0;
     if (this.pingInterval) {
       clearInterval(this.pingInterval);
       this.pingInterval = null;
     }
     this.emit('disconnected');
+  }
+
+  private ensureConnected(): void {
+    if (this.connected) return;
+    if (this.connecting) {
+      const startedAt = this.connectingStartedAt || Date.now();
+      if (Date.now() - startedAt < 20_000) return;
+      log.warn('Binance WS baglantisi connecting durumunda takildi, yeniden baslatiliyor');
+      if (this.ws) {
+        try {
+          this.ws.terminate();
+        } catch {
+          // close event temizligi tamamlar
+        }
+      }
+      this.cleanup();
+    }
+    this.connect();
   }
 
   private scheduleReconnect(): void {

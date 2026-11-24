@@ -24,12 +24,12 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { useQuery } from '@tanstack/react-query';
-import { indicatorsApi, marketApi } from '@/api/endpoints';
+import { indicatorsApi, marketApi, paperPortfoliosApi, strategiesApi } from '@/api/endpoints';
 import { ws } from '@/api/ws';
 import { useAppStore, type DrawingMode } from '@/store/app';
 import { useBot } from '@/hooks/useBots';
 import { closesOf, computeEMA, computeRSI } from '@/lib/indicators';
-import type { Candle, DrawingPoint, StrategyDrawing } from '@/types/api';
+import type { Candle, DrawingPoint, Position, StrategyDrawing } from '@/types/api';
 
 /** Tema renkleri — globals.css değerleriyle senkron tutulmalı. */
 const C = {
@@ -44,6 +44,8 @@ const C = {
   rsi: '#A78BFA',     // Mor — TradingView default RSI tonu
   rsiBand: '#7F8AA0', // 30/70 bantları
 };
+
+const CHART_CANDLE_LIMIT = 5000;
 
 /** Backend Candle → Lightweight Charts CandlestickData (saniye cinsinden time). */
 function toCandleData(c: Candle): CandlestickData {
@@ -95,6 +97,7 @@ type OverlayElement =
       textColor: string;
       isUp: boolean;
       stackIndex: number;
+      xOffset: number;
     };
 
 function toChartTime(raw: number): UTCTimestamp {
@@ -124,24 +127,173 @@ function dashOf(style?: string): string | undefined {
   return undefined;
 }
 
+function buildActivePositionDrawings(candles: Candle[], position: Position | null): StrategyDrawing[] {
+  if (!position || candles.length === 0) return [];
+  const last = candles[candles.length - 1]!;
+  const prev = candles.length > 1 ? candles[candles.length - 2] : undefined;
+  const step = prev ? Math.max(60_000, last.openTime - prev.openTime) : 60_000;
+  const start = last.openTime;
+  const end = start + step * 8;
+  const group = 'active-position-levels';
+  const rows: Array<{ price?: number; text: string; color: string; style?: string }> = [
+    { price: position.entryPrice, text: 'Giriş', color: '#cbd5e1', style: 'dotted' },
+    { price: position.takeProfitPrice, text: 'TP', color: '#22c55e', style: 'dashed' },
+    { price: position.stopLossPrice, text: 'SL', color: '#ef4444', style: 'dashed' },
+  ];
+
+  return rows.flatMap((row): StrategyDrawing[] => {
+    if (typeof row.price !== 'number' || !Number.isFinite(row.price)) return [];
+    const point = { time: end, price: row.price };
+    return [
+      {
+        type: 'line',
+        first: { time: start, price: row.price },
+        second: point,
+        color: row.color,
+        style: row.style,
+        width: 2,
+        group,
+      },
+      {
+        type: 'label',
+        point,
+        text: row.text,
+        color: row.color,
+        textcolor: '#0f172a',
+        style: row.text.includes('SL') ? 'label_down' : 'label_up',
+        size: 'tiny',
+        group,
+      },
+    ];
+  });
+}
+
+const HIDDEN_ACTIVE_PATTERN_ROLES = new Set([
+  'confirmation',
+  'entry_guide',
+  'stop_guide',
+  'take_profit_guide',
+  'target_2',
+]);
+
+// Gecmis setup'larin kendi TP/SL seviyeleri ayni fiyat skalasinda ust uste
+// yigilir. Pozisyonun gecerli seviyeleri buildActivePositionDrawings ile tek
+// bir set olarak cizilir; burada yalnizca tarihsel risk cizimlerini ayikliyoruz.
+const HISTORICAL_RISK_LEVEL_ROLES = new Set([
+  'strategy_stop',
+  'strategy_target',
+]);
+
+function withoutHistoricalRiskLevels(drawings: StrategyDrawing[]): StrategyDrawing[] {
+  return drawings.filter((drawing) => !HISTORICAL_RISK_LEVEL_ROLES.has(drawing.role ?? ''));
+}
+
+function simplifyActivePatternDrawings(drawings: StrategyDrawing[]): StrategyDrawing[] {
+  return drawings.flatMap((drawing) => {
+    if (drawing.role && HIDDEN_ACTIVE_PATTERN_ROLES.has(drawing.role)) return [];
+    if (drawing.type === 'label' && drawing.role === 'target_1') {
+      return [{ ...drawing, text: 'T1', size: 'tiny' }];
+    }
+    return [drawing];
+  });
+}
+
+function selectPaperPatternDrawings(
+  drawings: StrategyDrawing[],
+  position: { meta?: Record<string, unknown> } | undefined
+): StrategyDrawing[] {
+  if (!position || drawings.length === 0) return [];
+  const meta = position.meta ?? {};
+  const pattern = typeof meta.pattern === 'string' ? meta.pattern : '';
+  const direction = typeof meta.direction === 'string' ? meta.direction : '';
+  const length = Number(meta.zigzag_length);
+  const dTime = Number(meta.d_time);
+  if (!pattern || !direction || !Number.isFinite(length)) return [];
+
+  const labelText = `${direction} ${pattern} L${length}`;
+  const labels = drawings.filter((drawing): drawing is Extract<StrategyDrawing, { type: 'label' }> =>
+    drawing.type === 'label' && drawing.text === labelText && typeof drawing.group === 'string'
+  );
+  if (labels.length === 0) return [];
+
+  const selected = [...labels].sort((a, b) => {
+    if (!Number.isFinite(dTime)) return 0;
+    return Math.abs(Number(a.point.time) - dTime) - Math.abs(Number(b.point.time) - dTime);
+  })[0];
+  return selected?.group
+    ? simplifyActivePatternDrawings(drawings.filter((drawing) => drawing.group === selected.group))
+    : [];
+}
+
 export function Chart(): JSX.Element {
   const symbol = useAppStore((s) => s.symbol);
   const interval = useAppStore((s) => s.interval);
   const selectedBotId = useAppStore((s) => s.selectedBotId);
+  const selectedPaperPosition = useAppStore((s) => s.selectedPaperPosition);
   const drawingMode = useAppStore((s) => s.drawingMode);
   const activeIndicatorIds = useAppStore((s) => s.activeIndicatorIds);
   const setDrawingMode = useAppStore((s) => s.setDrawingMode);
   const { data: selectedBot } = useBot(selectedBotId);
+  const paperReports = useQuery({
+    queryKey: ['paper-portfolios'],
+    queryFn: () => paperPortfoliosApi.list(),
+    enabled: selectedPaperPosition !== null,
+    refetchInterval: selectedPaperPosition ? 15_000 : false,
+  });
+  const selectedPaperReport = paperReports.data?.find(
+    (report) => report.sourceFile === selectedPaperPosition?.sourceFile
+  );
+  const selectedPaperRaw = selectedPaperReport?.openPositions.find(
+    (position) => position.id === selectedPaperPosition?.positionId
+  );
+  const selectedPaperAsPosition = useMemo<Position | null>(() => {
+    if (
+      !selectedPaperRaw ||
+      selectedPaperRaw.symbol !== symbol ||
+      selectedPaperReport?.config.interval !== interval
+    ) {
+      return null;
+    }
+    return {
+      botId: `paper:${selectedPaperReport.sourceFile}`,
+      symbol: selectedPaperRaw.symbol,
+      side: selectedPaperRaw.side === 'long' ? 'BUY' : 'SELL',
+      quantity: selectedPaperRaw.qty ?? 0,
+      entryPrice: selectedPaperRaw.entry,
+      stopLossPrice: selectedPaperRaw.sl,
+      takeProfitPrice: selectedPaperRaw.tp,
+      meta: selectedPaperRaw.meta,
+      openedAt: selectedPaperRaw.entryTime ?? Date.parse(selectedPaperRaw.openedAtIso),
+    };
+  }, [interval, selectedPaperRaw, selectedPaperReport?.config.interval, selectedPaperReport?.sourceFile, symbol]);
   const selectedDrawings =
     selectedBot?.config.symbol === symbol && selectedBot.config.interval === interval
       ? selectedBot.state.drawings
       : undefined;
   const { data: candles } = useQuery({
     queryKey: ['klines', symbol, interval],
-    queryFn: () => marketApi.klines(symbol, interval, 500),
+    queryFn: () => marketApi.klines(symbol, interval, CHART_CANDLE_LIMIT),
     staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: true,
   });
   const activeIndicatorKey = activeIndicatorIds.join('|');
+  const paperStrategyFilename = selectedPaperReport?.config.strategyFile;
+  const paperStrategyDrawings = useQuery({
+    queryKey: [
+      'paper-strategy-drawings',
+      selectedPaperReport?.sourceFile,
+      paperStrategyFilename,
+      symbol,
+      interval,
+      candles?.at(-1)?.openTime,
+    ],
+    queryFn: () => strategiesApi
+      .draw(paperStrategyFilename!, { candles: candles ?? [] })
+      .then((result) => result.drawings),
+    enabled: Boolean(selectedPaperRaw && paperStrategyFilename && candles?.length),
+    staleTime: 30_000,
+  });
   const indicatorDrawings = useQuery({
     queryKey: ['indicator-drawings', symbol, interval, activeIndicatorKey, candles?.at(-1)?.openTime],
     queryFn: async () => {
@@ -159,20 +311,44 @@ export function Chart(): JSX.Element {
     enabled: Boolean(candles?.length && activeIndicatorIds.length > 0),
     staleTime: 10_000,
   });
+  const selectedPaperDrawings = useMemo(
+    () => selectPaperPatternDrawings(paperStrategyDrawings.data ?? [], selectedPaperRaw),
+    [paperStrategyDrawings.data, selectedPaperRaw]
+  );
   const visibleDrawings = useMemo(() => {
     if (drawingMode === 'hidden') return [];
     const botDrawings = selectedDrawings ?? [];
+    const paperDrawings = selectedPaperRaw ? selectedPaperDrawings : [];
     const activeIndicatorDrawings = activeIndicatorIds.length ? indicatorDrawings.data ?? [] : [];
-    if (drawingMode === 'all') return [...activeIndicatorDrawings, ...botDrawings];
-    const firstGrouped = botDrawings.find((drawing) => typeof drawing.group === 'string' && drawing.group);
+    const activePositionDrawings = buildActivePositionDrawings(
+      candles ?? [],
+      selectedPaperAsPosition ?? selectedBot?.state.position ?? null
+    );
+    if (drawingMode === 'all') {
+      return [
+        ...activeIndicatorDrawings,
+        ...withoutHistoricalRiskLevels(botDrawings),
+        ...withoutHistoricalRiskLevels(paperDrawings),
+        ...activePositionDrawings,
+      ];
+    }
+    const strategyDrawings = paperDrawings.length ? paperDrawings : botDrawings;
+    const firstGrouped = strategyDrawings.find((drawing) => typeof drawing.group === 'string' && drawing.group);
     if (firstGrouped?.group) {
       return [
         ...activeIndicatorDrawings,
-        ...botDrawings.filter((drawing) => drawing.group === firstGrouped.group),
+        ...withoutHistoricalRiskLevels(
+          strategyDrawings.filter((drawing) => drawing.group === firstGrouped.group)
+        ),
+        ...activePositionDrawings,
       ];
     }
-    return [...activeIndicatorDrawings, ...botDrawings.slice(-10)];
-  }, [activeIndicatorIds.length, drawingMode, indicatorDrawings.data, selectedDrawings]);
+    return [
+      ...activeIndicatorDrawings,
+      ...withoutHistoricalRiskLevels(strategyDrawings.slice(-10)),
+      ...activePositionDrawings,
+    ];
+  }, [activeIndicatorIds.length, candles, drawingMode, indicatorDrawings.data, selectedBot?.state.position, selectedDrawings, selectedPaperAsPosition, selectedPaperDrawings, selectedPaperRaw]);
   const [overlayElements, setOverlayElements] = useState<OverlayElement[]>([]);
 
   // İki ayrı container — main (mum/volume/ema) ve sub (RSI)
@@ -193,6 +369,7 @@ export function Chart(): JSX.Element {
   const renderOverlayRef = useRef<() => void>(() => undefined);
   const overlayFrameRef = useRef<number | null>(null);
   const scheduleOverlayRenderRef = useRef<() => void>(() => undefined);
+  const lastAutoFitKeyRef = useRef<string | null>(null);
 
   renderOverlayRef.current = () => {
     const chart = mainChartRef.current;
@@ -289,12 +466,24 @@ export function Chart(): JSX.Element {
       if (drawing.type === 'label') {
         const point = toCoord(drawing.point);
         if (!point) return;
+        const isUp = !String(drawing.style ?? '').toLowerCase().includes('down');
         const stackIndex = next.filter((el) =>
           el.kind === 'label' &&
           Math.abs(el.x - point.x) < 90 &&
           Math.abs(el.y - point.y) < 32 &&
-          el.isUp === !String(drawing.style ?? '').toLowerCase().includes('down')
+          el.isUp === isUp
         ).length;
+        const labelHeight = 22;
+        const candidateTop = isUp
+          ? point.y - labelHeight - 8 - stackIndex * (labelHeight + 4)
+          : point.y + 8 + stackIndex * (labelHeight + 4);
+        const oppositeCollisions = next.filter((el) => {
+          if (el.kind !== 'label' || el.isUp === isUp || Math.abs(el.x - point.x) >= 90) return false;
+          const existingTop = el.isUp
+            ? el.y - labelHeight - 8 - el.stackIndex * (labelHeight + 4)
+            : el.y + 8 + el.stackIndex * (labelHeight + 4);
+          return candidateTop < existingTop + labelHeight && candidateTop + labelHeight > existingTop;
+        }).length;
         next.push({
           kind: 'label',
           id: `label-${drawingIndex}`,
@@ -303,8 +492,9 @@ export function Chart(): JSX.Element {
           text: drawing.text ?? '',
           color: drawing.color ?? C.text,
           textColor: drawing.textcolor ?? C.bg,
-          isUp: !String(drawing.style ?? '').toLowerCase().includes('down'),
+          isUp,
           stackIndex,
+          xOffset: oppositeCollisions === 0 ? 0 : (isUp ? -64 : 64) * oppositeCollisions,
         });
       }
     });
@@ -520,14 +710,15 @@ export function Chart(): JSX.Element {
     }
     rsiSeriesRef.current.setData(rsiData);
 
-// Sembol/interval değişince son mumlara odaklan
-    if (candles.length > 0 && mainChartRef.current) {
+    const autoFitKey = `${symbol}:${interval}`;
+    if (candles.length > 0 && mainChartRef.current && lastAutoFitKeyRef.current !== autoFitKey) {
+      lastAutoFitKeyRef.current = autoFitKey;
       const ts = mainChartRef.current.timeScale();
       ts.fitContent();
       ts.scrollToRealTime();
     }
     renderOverlayRef.current();
-  }, [candles]);
+  }, [candles, interval, symbol]);
 
   /* ─── Canlı kline akışı ──────────────────────────────── */
   useEffect(() => {
@@ -555,7 +746,7 @@ export function Chart(): JSX.Element {
         buf[buf.length - 1] = candle;
       } else {
         buf.push(candle);
-        if (buf.length > 600) buf.shift();
+        if (buf.length > CHART_CANDLE_LIMIT) buf.shift();
       }
 
       // Chart serileri — Lightweight Charts'ın update() metodu hem yeni bar
@@ -628,7 +819,8 @@ export function Chart(): JSX.Element {
             }
             const labelWidth = Math.max(56, Math.min(220, el.text.length * 7 + 18));
             const labelHeight = 22;
-            const labelX = el.x - labelWidth / 2;
+            const labelCenterX = el.x + el.xOffset;
+            const labelX = labelCenterX - labelWidth / 2;
             const stackOffset = el.stackIndex * (labelHeight + 4);
             const labelY = el.isUp
               ? el.y - labelHeight - 8 - stackOffset
@@ -644,7 +836,7 @@ export function Chart(): JSX.Element {
                   fill={el.color}
                 />
                 <text
-                  x={el.x}
+                  x={labelCenterX}
                   y={labelY + 15}
                   fill={el.textColor}
                   textAnchor="middle"

@@ -55,6 +55,11 @@ function profileKey(row) {
   return `${row.symbol}:${row.interval}`;
 }
 
+function strategyId(walkForward) {
+  const file = String(walkForward.strategyFile || "orphan_market_reader.py");
+  return path.basename(file, path.extname(file));
+}
+
 function dailyPct(row) {
   if (!row?.summary || !Number.isFinite(row.summary.totalReturnPct) || !Number.isFinite(row.windowDays)) {
     return null;
@@ -238,9 +243,10 @@ function latestPlan(strategy, activeProfiles, byProfile, targetDailyPct) {
 
 function toMarkdown(report) {
   const lines = [];
-  lines.push("# Orphan Market Reader Portfolio Optimizer");
+  lines.push("# Strategy Portfolio Optimizer");
   lines.push("");
   lines.push(`Generated: ${report.generatedAt}`);
+  lines.push(`Strategy: ${report.strategy}`);
   lines.push(`Target Daily %: ${report.targetDailyPct}`);
   lines.push(`Active Profiles: ${report.activeProfiles.join(", ")}`);
   lines.push("");
@@ -283,6 +289,7 @@ function main() {
   const byProfile = groupResults(wf.results || []);
   const activeProfiles = (gate.activeProfiles || []).map((row) => row.profile);
   const candidateProfiles = (gate.candidates || []).map((row) => row.profile);
+  const strategy = strategyId(wf);
 
   const strategies = [
     { name: "Equal active profiles", type: "equal", cap: 1 },
@@ -313,6 +320,8 @@ function main() {
       walkForward: args.wf,
       gate: args.gate,
     },
+    strategy,
+    strategyFile: wf.strategyFile || `${strategy}.py`,
     targetDailyPct: args.targetDailyPct,
     activeProfiles,
     candidateProfiles,
@@ -320,7 +329,7 @@ function main() {
     plans,
     recommended,
     recommendedAllocation: {
-      strategy: "orphan_market_reader",
+      strategy,
       plan: recommended.name,
       leverage: wf.params?.leverage ?? null,
       max_position_pct: wf.params?.max_position_pct ?? null,

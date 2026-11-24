@@ -8,7 +8,7 @@ import {
   ShoppingCart,
   Target,
 } from 'lucide-react';
-import { marketApi, botsApi } from '@/api/endpoints';
+import { marketApi, botsApi, paperPortfoliosApi } from '@/api/endpoints';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { BotList } from './BotList';
@@ -17,12 +17,30 @@ import { CreateBotModal } from './CreateBotModal';
 import { useBots } from '@/hooks/useBots';
 import { cn } from '@/lib/cn';
 import { formatPrice, formatTimeShort } from '@/lib/format';
-import { useAppStore } from '@/store/app';
-import type { BotConfig, BotSnapshot, OrderBook, Position, Trade } from '@/types/api';
+import { useAppStore, type Interval } from '@/store/app';
+import type {
+  BotConfig,
+  BotSnapshot,
+  OrderBook,
+  PaperPortfolioPosition,
+  PaperPortfolioReport,
+  PaperPortfolioTrade,
+  Position,
+  Trade,
+} from '@/types/api';
 
 type PanelTab = 'order' | 'book' | 'trades' | 'positions' | 'bots';
 type OrderSide = 'BUY' | 'SELL';
 type ManualOrderType = 'LIMIT' | 'MARKET' | 'STOP_L' | 'OCO' | 'TWAP';
+type TradeHistoryItem = { trade: Trade; bot?: BotConfig; botName?: string };
+type PositionListItem =
+  | { kind: 'bot'; snap: BotSnapshot; bot: BotConfig; position: Position }
+  | {
+      kind: 'paper';
+      report: PaperPortfolioReport;
+      paperPosition: PaperPortfolioPosition;
+      position: Position;
+    };
 
 const PANEL_TABS: Array<{ id: PanelTab; label: string; icon: typeof ShoppingCart }> = [
   { id: 'order', label: 'Emir', icon: ShoppingCart },
@@ -313,6 +331,11 @@ function OrderBookPanel(): JSX.Element {
 
 function OrderHistoryPanel(): JSX.Element {
   const { data: bots = [] } = useBots();
+  const paperPortfolios = useQuery({
+    queryKey: ['paper-portfolios'],
+    queryFn: () => paperPortfoliosApi.list(),
+    refetchInterval: 5_000,
+  });
   const tradeQueries = useQueries({
     queries: bots.map((bot) => ({
       queryKey: ['bots', bot.id, 'trades', 20],
@@ -323,14 +346,28 @@ function OrderHistoryPanel(): JSX.Element {
 
   const trades = useMemo(() => {
     const botById = new Map(bots.map((bot) => [bot.id, bot]));
-    return tradeQueries
+    const botTrades: TradeHistoryItem[] = tradeQueries
       .flatMap((query) => query.data ?? [])
-      .map((trade) => ({ trade, bot: botById.get(trade.botId) }))
+      .map((trade) => ({ trade, bot: botById.get(trade.botId) }));
+    const paperTrades: TradeHistoryItem[] = (paperPortfolios.data ?? []).flatMap((report) => {
+      const botName = paperReportName(report);
+      const openRows = report.openPositions.map((position) => ({
+        trade: paperOpenPositionToTrade(report, position),
+        botName,
+      }));
+      const closedRows = (report.recentTrades ?? []).map((trade) => ({
+        trade: paperClosedTradeToTrade(report, trade),
+        botName,
+      }));
+      return [...openRows, ...closedRows];
+    });
+
+    return [...botTrades, ...paperTrades]
       .sort((a, b) => b.trade.createdAt - a.trade.createdAt)
       .slice(0, 60);
-  }, [bots, tradeQueries]);
+  }, [bots, paperPortfolios.data, tradeQueries]);
 
-  if (!bots.length) return <EmptyPanel label="Kayıtlı bot yok" />;
+  if (!bots.length && !paperPortfolios.data?.length) return <EmptyPanel label="Kayıtlı bot yok" />;
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -343,8 +380,8 @@ function OrderHistoryPanel(): JSX.Element {
         {trades.length === 0 ? (
           <EmptyPanel label="Emir kaydı yok" compact />
         ) : (
-          trades.map(({ trade, bot }) => (
-            <TradeHistoryRow key={trade.id} trade={trade} bot={bot} />
+          trades.map(({ trade, bot, botName }) => (
+            <TradeHistoryRow key={trade.id} trade={trade} bot={bot} botName={botName} />
           ))
         )}
       </div>
@@ -354,38 +391,74 @@ function OrderHistoryPanel(): JSX.Element {
 
 function PositionsPanel({ onSelectBot }: { onSelectBot: (id: string) => void }): JSX.Element {
   const { data: bots = [], isLoading } = useBots();
+  const paperPortfolios = useQuery({
+    queryKey: ['paper-portfolios'],
+    queryFn: () => paperPortfoliosApi.list(),
+    refetchInterval: 5_000,
+  });
   const snapshots = useBotSnapshots(bots);
+  const setSymbol = useAppStore((state) => state.setSymbol);
+  const setInterval = useAppStore((state) => state.setInterval);
+  const setDrawingMode = useAppStore((state) => state.setDrawingMode);
+  const setSelectedPaperPosition = useAppStore((state) => state.setSelectedPaperPosition);
 
   const positions = useMemo(() => {
-    return snapshots
+    const botPositions: PositionListItem[] = snapshots
       .map((query, index) => ({
+        kind: 'bot' as const,
         snap: query.data,
         bot: bots[index],
         position: query.data?.state.position ?? null,
       }))
-      .filter((row): row is { snap: BotSnapshot; bot: BotConfig; position: Position } =>
+      .filter((row): row is Extract<PositionListItem, { kind: 'bot' }> =>
         Boolean(row.snap && row.bot && row.position)
       );
-  }, [bots, snapshots]);
+    const paperPositions: PositionListItem[] = (paperPortfolios.data ?? []).flatMap((report) =>
+      report.openPositions.map((paperPosition) => ({
+        kind: 'paper' as const,
+        report,
+        paperPosition,
+        position: paperPositionToPosition(report, paperPosition),
+      }))
+    );
+    return [...botPositions, ...paperPositions].sort(
+      (a, b) => b.position.openedAt - a.position.openedAt
+    );
+  }, [bots, paperPortfolios.data, snapshots]);
 
-  if (isLoading) return <LoadingPanel label="Pozisyonlar yukleniyor..." />;
+  const selectPaperPosition = (report: PaperPortfolioReport, position: PaperPortfolioPosition): void => {
+    setSymbol(position.symbol);
+    setInterval((report.config.interval ?? '1h') as Interval);
+    setDrawingMode('all');
+    setSelectedPaperPosition({ sourceFile: report.sourceFile, positionId: position.id });
+  };
+
+  if (isLoading || paperPortfolios.isLoading) return <LoadingPanel label="Pozisyonlar yukleniyor..." />;
   if (!positions.length) return <EmptyPanel label="Açık pozisyon yok" />;
 
   return (
     <div className="h-full min-h-0 overflow-y-auto p-3">
       <div className="space-y-3">
-        {positions.map(({ bot, snap, position }) => (
-          <button
-            key={bot.id}
+        {positions.map((row) => {
+          const position = row.position;
+          const name = row.kind === 'bot' ? row.bot.name : paperReportName(row.report);
+          const pnl = row.kind === 'bot' ? row.snap.state.realizedPnlUsd : undefined;
+          return (
+            <button
+            key={row.kind === 'bot' ? row.bot.id : `paper:${row.report.sourceFile}:${row.paperPosition.id}`}
             type="button"
-            onClick={() => onSelectBot(bot.id)}
+            onClick={() =>
+              row.kind === 'bot'
+                ? onSelectBot(row.bot.id)
+                : selectPaperPosition(row.report, row.paperPosition)
+            }
             className="w-full rounded border border-border bg-surface/70 p-3 text-left transition-colors hover:border-accent/50 hover:bg-surface"
           >
             <div className="mb-3 flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-text">{position.symbol}</div>
                 <div className="mt-0.5 font-mono text-2xs text-muted">
-                  {position.quantity.toFixed(6)} · {bot.name}
+                  {position.quantity.toFixed(6)} · {name}
                 </div>
               </div>
               <span
@@ -401,12 +474,17 @@ function PositionsPanel({ onSelectBot }: { onSelectBot: (id: string) => void }):
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <PositionMetric label="Giriş" value={`$${formatPrice(position.entryPrice)}`} />
-              <PositionMetric label="PnL" value={`${snap.state.realizedPnlUsd >= 0 ? '+' : ''}$${formatPrice(Math.abs(snap.state.realizedPnlUsd))}`} tone={snap.state.realizedPnlUsd >= 0 ? 'bull' : 'bear'} />
+              {row.kind === 'bot' ? (
+                <PositionMetric label="PnL" value={`${pnl! >= 0 ? '+' : ''}$${formatPrice(Math.abs(pnl!))}`} tone={pnl! >= 0 ? 'bull' : 'bear'} />
+              ) : (
+                <PositionMetric label="Hedef" value={`%${row.paperPosition.targetPct.toFixed(2)}`} tone="bull" />
+              )}
               <PositionMetric label="Stop" value={position.stopLossPrice ? `$${formatPrice(position.stopLossPrice)}` : '-'} tone="bear" />
               <PositionMetric label="TP" value={position.takeProfitPrice ? `$${formatPrice(position.takeProfitPrice)}` : '-'} tone="bull" />
             </div>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -426,6 +504,87 @@ function BotsPanel({
   ) : (
     <BotList selectedId={selected} onSelect={onSelect} onCreate={onCreate} />
   );
+}
+
+function paperReportName(report: PaperPortfolioReport): string {
+  return report.config.botName
+    ?? report.config.strategyFile?.replace(/\.py$/i, '').replaceAll('_', ' ')
+    ?? 'Paper portfoy';
+}
+
+function paperOpenPositionToTrade(
+  report: PaperPortfolioReport,
+  position: PaperPortfolioPosition
+): Trade {
+  const entryTime = position.entryTime ?? Date.parse(position.openedAtIso);
+  return {
+    id: `paper:${report.sourceFile}:${position.id}:open`,
+    botId: `paper:${report.sourceFile}`,
+    symbol: position.symbol,
+    side: position.side === 'long' ? 'BUY' : 'SELL',
+    type: 'MARKET',
+    quantity: paperPositionQuantity(position),
+    price: position.entry,
+    feeUsd: position.entryFee ?? 0,
+    stopLossPrice: position.sl,
+    takeProfitPrice: position.tp,
+    meta: position.meta,
+    mode: 'paper',
+    clientOrderId: `paper:${report.sourceFile}:${position.id}:open`,
+    createdAt: Number.isFinite(entryTime) ? entryTime : Date.now(),
+  };
+}
+
+function paperClosedTradeToTrade(
+  report: PaperPortfolioReport,
+  trade: PaperPortfolioTrade
+): Trade {
+  return {
+    id: `paper:${report.sourceFile}:${trade.id}:close`,
+    botId: `paper:${report.sourceFile}`,
+    symbol: trade.symbol,
+    side: trade.side === 'long' ? 'SELL' : 'BUY',
+    type: 'MARKET',
+    quantity: trade.entryPrice ? Math.abs(Number(trade.allocation ?? 0) / trade.entryPrice) : 0,
+    price: trade.exitPrice,
+    feeUsd: trade.fees ?? 0,
+    pnlUsd: trade.netPnl,
+    stopLossPrice: trade.slPrice,
+    takeProfitPrice: trade.tpPrice,
+    meta: {
+      ...(trade.meta ?? {}),
+      reason: trade.reason,
+      pnlPct: trade.pnlPct,
+      accountReturnPct: trade.accountReturnPct,
+    },
+    mode: 'paper',
+    clientOrderId: `paper:${report.sourceFile}:${trade.id}:close`,
+    createdAt: trade.exitTime,
+  };
+}
+
+function paperPositionToPosition(
+  report: PaperPortfolioReport,
+  position: PaperPortfolioPosition
+): Position {
+  const openedAt = position.entryTime ?? Date.parse(position.openedAtIso);
+  return {
+    botId: `paper:${report.sourceFile}`,
+    symbol: position.symbol,
+    side: position.side === 'long' ? 'BUY' : 'SELL',
+    quantity: paperPositionQuantity(position),
+    entryPrice: position.entry,
+    stopLossPrice: position.sl,
+    takeProfitPrice: position.tp,
+    meta: position.meta,
+    openedAt: Number.isFinite(openedAt) ? openedAt : Date.now(),
+  };
+}
+
+function paperPositionQuantity(position: PaperPortfolioPosition): number {
+  if (typeof position.qty === 'number' && Number.isFinite(position.qty)) return position.qty;
+  if (position.entry && position.allocation) return Math.abs(position.allocation / position.entry);
+  return 0;
 }
 
 function useBotSnapshots(bots: BotConfig[]) {
@@ -489,25 +648,67 @@ function DepthRows({
   );
 }
 
-function TradeHistoryRow({ trade, bot }: { trade: Trade; bot?: BotConfig }): JSX.Element {
+function TradeHistoryRow({
+  trade,
+  bot,
+  botName,
+}: {
+  trade: Trade;
+  bot?: BotConfig;
+  botName?: string;
+}): JSX.Element {
   const pnl = trade.pnlUsd ?? 0;
+  const label = formatTradeActionLabel(trade);
+  const metaLabel = formatTradeMetaLabel(trade);
+  const tone =
+    trade.pnlUsd !== undefined
+      ? pnl > 0
+        ? 'text-bull'
+        : pnl < 0
+          ? 'text-bear'
+          : 'text-muted'
+      : trade.side === 'BUY'
+        ? 'text-bull'
+        : 'text-bear';
   return (
     <div className="grid grid-cols-[70px_1fr_80px] items-center rounded px-2 py-1.5 text-xs hover:bg-surface-2">
       <span className="font-mono text-muted">{formatTimeShort(trade.createdAt)}</span>
       <span className="min-w-0">
-        <span className={cn('font-semibold', trade.side === 'BUY' ? 'text-bull' : 'text-bear')}>
-          {trade.side}
+        <span className={cn('font-semibold', tone)}>
+          {label}
         </span>
-        <span className="ml-1 text-text">{bot?.name ?? trade.symbol}</span>
+        <span className="ml-1 font-mono text-2xs text-muted">{trade.side}</span>
+        <span className="ml-1 text-text">{botName ?? bot?.name ?? trade.symbol}</span>
         <span className="block truncate font-mono text-2xs text-muted">
           {trade.quantity.toFixed(6)} @ {formatPrice(trade.price)}
         </span>
+        {metaLabel && (
+          <span className="block truncate text-2xs text-muted">
+            {metaLabel}
+          </span>
+        )}
       </span>
       <span className={cn('text-right font-mono tabular-nums', pnl > 0 ? 'text-bull' : pnl < 0 ? 'text-bear' : 'text-muted')}>
         {trade.pnlUsd === undefined ? '-' : `${pnl >= 0 ? '+' : ''}$${formatPrice(Math.abs(pnl))}`}
       </span>
     </div>
   );
+}
+
+function formatTradeActionLabel(trade: Trade): string {
+  const isClose = trade.pnlUsd !== undefined;
+  if (isClose) return trade.side === 'BUY' ? 'SHORT kapandi' : 'LONG kapandi';
+  return trade.side === 'BUY' ? 'LONG acildi' : 'SHORT acildi';
+}
+
+function formatTradeMetaLabel(trade: Trade): string {
+  const meta = trade.meta ?? {};
+  const pattern = typeof meta.pattern === 'string' ? meta.pattern : '';
+  const direction = typeof meta.direction === 'string' ? meta.direction : '';
+  const length = typeof meta.zigzag_length === 'number' || typeof meta.zigzag_length === 'string'
+    ? `L${meta.zigzag_length}`
+    : '';
+  return [pattern, length, direction].filter(Boolean).join(' ');
 }
 
 function PositionMetric({
