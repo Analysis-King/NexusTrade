@@ -20,7 +20,7 @@ import {
   useBot, useBotTrades, useStartBot, useStopBot,
   usePauseBot, useResumeBot, useDeleteBot,
 } from '@/hooks/useBots';
-import { formatPrice, formatTimeShort } from '@/lib/format';
+import { formatPrice, formatSignedUsd, formatTimeShort } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { useAppStore } from '@/store/app';
 import type { BotStatus, Trade, Position } from '@/types/api';
@@ -320,7 +320,7 @@ function Stat({
 }): JSX.Element {
   const formatted =
     kind === 'pnl'
-      ? `${value >= 0 ? '+' : ''}$${formatPrice(Math.abs(value))}`
+      ? formatSignedUsd(value)
       : kind === 'usd'
         ? `$${formatPrice(value)}`
         : kind === 'pct'
@@ -389,7 +389,7 @@ function TradeRow({ trade }: { trade: Trade }): JSX.Element {
               trade.pnlUsd > 0 ? 'text-bull' : trade.pnlUsd < 0 ? 'text-bear' : 'text-muted'
             )}
           >
-            {trade.pnlUsd >= 0 ? '+' : ''}${formatPrice(Math.abs(trade.pnlUsd))}
+            {formatSignedUsd(trade.pnlUsd)}
           </span>
         )}
       </div>

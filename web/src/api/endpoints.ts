@@ -72,6 +72,10 @@ export const botsApi = {
 
 export const paperPortfoliosApi = {
   list: () => api.get<import('@/types/api').PaperPortfolioReport[]>('/paper-portfolios'),
+  stop: (sourceFile: string) =>
+    api.post<{ queued: boolean }>(`/paper-portfolios/${encodeURIComponent(sourceFile)}/stop`),
+  extend: (sourceFile: string, days: number) =>
+    api.post<{ queued: boolean }>(`/paper-portfolios/${encodeURIComponent(sourceFile)}/extend`, { days }),
 };
 
 /* ─── Strategies ───────────────────────────────────────── */

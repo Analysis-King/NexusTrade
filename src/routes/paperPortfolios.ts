@@ -1,9 +1,19 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Router } from 'express';
+import { z } from 'zod';
+import {
+  getPaperPortfolioActionState,
+  isManagedPaperPortfolio,
+  requestPaperPortfolioAction,
+} from '../services/paperPortfolioSupervisor.js';
 import { asyncHandler } from './middleware.js';
 
 export const paperPortfolioRouter = Router();
+
+const extendSchema = z.object({
+  days: z.number().int().min(1).max(365),
+});
 
 type PaperPortfolioFile = Record<string, unknown> & {
   sourceFile: string;
@@ -36,7 +46,15 @@ paperPortfolioRouter.get(
             const raw = await fs.readFile(path.join(dataDir, file), 'utf8');
             const report = JSON.parse(raw) as Record<string, unknown>;
             const runtime = await getPaperRuntime(dataDir, file, report);
-            return { ...report, ...runtime, sourceFile: file } as PaperPortfolioFile;
+            const actionState = getPaperPortfolioActionState(file);
+            return {
+              ...report,
+              ...runtime,
+              sourceFile: file,
+              controllable: isManagedPaperPortfolio(file),
+              pendingAction: actionState?.status === 'pending' ? actionState.action : null,
+              actionError: actionState?.status === 'failed' ? actionState.error ?? 'Komut basarisiz' : null,
+            } as PaperPortfolioFile;
           } catch {
             return null;
           }
@@ -56,13 +74,33 @@ paperPortfolioRouter.get(
   })
 );
 
+// Durdur: acik pozisyonlar son fiyattan kapatilir, portfoy bir daha islem acmaz.
+paperPortfolioRouter.post(
+  '/:sourceFile/stop',
+  asyncHandler(async (req, res) => {
+    requestPaperPortfolioAction(String(req.params.sourceFile), 'stop');
+    res.status(202).json({ ok: true, data: { queued: true } });
+  })
+);
+
+// Uzat: planlanan bitis ileri alinir, portfoy yeniden yeni islem acar.
+paperPortfolioRouter.post(
+  '/:sourceFile/extend',
+  asyncHandler(async (req, res) => {
+    const { days } = extendSchema.parse(req.body ?? {});
+    requestPaperPortfolioAction(String(req.params.sourceFile), 'extend', days);
+    res.status(202).json({ ok: true, data: { queued: true } });
+  })
+);
+
 async function getPaperRuntime(
   dataDir: string,
   reportFile: string,
   report: Record<string, unknown>
 ): Promise<PaperPortfolioRuntime> {
   const status = String(report.status ?? 'unknown');
-  if (status !== 'running') {
+  // closing: bitis gecti ama acik pozisyonlar hala izleniyor; guncel olup olmadigi onemli.
+  if (status !== 'running' && status !== 'closing') {
     return {
       runtimeAlive: false,
       runtimePid: null,
@@ -80,7 +118,7 @@ async function getPaperRuntime(
     runtimeAlive,
     runtimePid,
     runtimeStale,
-    runtimeStatus: runtimeStale ? 'stale' : 'running',
+    runtimeStatus: runtimeStale ? 'stale' : status,
   };
 }
 

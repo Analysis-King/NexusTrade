@@ -4,6 +4,7 @@
  */
 
 import 'dotenv/config';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 const envSchema = z.object({
@@ -20,6 +21,8 @@ const envSchema = z.object({
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
+  /** Okuma disi istekler (bot baslat/durdur/sil, emir...) icin ayri butce. */
+  RATE_LIMIT_WRITE_MAX: z.coerce.number().int().positive().default(120),
 
   BINANCE_REST_URL: z.string().url().default('https://api.binance.com'),
   BINANCE_WS_URL: z.string().default('wss://stream.binance.com:9443'),
@@ -47,6 +50,22 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+// Bu iki degerin SHA-256'si: bir sure .env.example'da gercek gorunumlu ornek olarak GitHub'a gittiler.
+// .env'e aynen kopyalandiysa gizli degiller; API anahtari sifrelemesi gelmeden once yenilenmeleri sart.
+const PUBLIC_EXAMPLE_SECRET_HASHES = new Set([
+  'bedf27085ae7a827ac3ef0ba3e9034d19e5e26e3fb76aacec39b77856ff492bc',
+  '5d484a0ee3062ff02a73f1a2cac70d6afcf5a103c079cb0d7a44d9c9894350c3',
+]);
+const publicSecrets = (['SESSION_SECRET', 'ENCRYPTION_KEY'] as const).filter((key) =>
+  PUBLIC_EXAMPLE_SECRET_HASHES.has(createHash('sha256').update(env[key]).digest('hex'))
+);
+if (publicSecrets.length > 0 && env.NODE_ENV !== 'test') {
+  console.warn(
+    `⚠ ${publicSecrets.join(', ')} eski .env.example'daki herkese acik degerle ayni. ` +
+      "`openssl rand -hex 32` ile yenisini uretip .env'e yazin."
+  );
+}
 
 export const isProd = env.NODE_ENV === 'production';
 export const isDev = env.NODE_ENV === 'development';

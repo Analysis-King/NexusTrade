@@ -13,8 +13,11 @@ import { TabRail, type TabId } from '@/components/layout/TabRail';
 import { SidePanel } from '@/components/layout/SidePanel';
 import { SymbolPicker } from '@/components/layout/SymbolPicker';
 import { Chart } from '@/components/chart/Chart';
+import { useBotEventSync } from '@/hooks/useBots';
 
 export default function App(): JSX.Element {
+  // Bot olaylarini (WS) tek noktadan React Query cache'ine yansit.
+  useBotEventSync();
   const [activeTab, setActiveTab] = useState<TabId | null>('trading');
   const [pickerOpen, setPickerOpen] = useState(false);
 

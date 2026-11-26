@@ -188,11 +188,17 @@ export interface PaperPortfolioReport {
   generatedAtIso: string;
   startedAtIso: string;
   stopAtIso: string;
-  status: 'running' | 'completed' | string;
-  runtimeStatus?: 'running' | 'stale' | 'completed' | string;
+  stoppedAtIso?: string | null;
+  /** running: islem aciyor · closing: sure doldu, acik pozisyonlar kapaniyor · completed · stopped: elle durduruldu */
+  status: 'running' | 'closing' | 'completed' | 'stopped' | string;
+  runtimeStatus?: 'running' | 'closing' | 'stale' | 'completed' | 'stopped' | string;
   runtimeAlive?: boolean;
   runtimePid?: number | null;
   runtimeStale?: boolean;
+  /** Supervisor yonetiyor mu; durdur/uzat sadece bunlarda var. */
+  controllable?: boolean;
+  pendingAction?: 'stop' | 'extend' | null;
+  actionError?: string | null;
   elapsedDays: number;
   remainingDays: number;
   config: {

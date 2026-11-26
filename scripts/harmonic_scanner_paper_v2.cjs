@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const lifecycle = require('./lib/paper_lifecycle.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOUR = 3_600_000;
@@ -48,7 +49,7 @@ async function main() {
     printReport(report);
     return;
   }
-  if (!['start', 'once'].includes(action)) {
+  if (!['start', 'once', 'stop', 'extend'].includes(action)) {
     throw new Error(`Bilinmeyen action: ${action}`);
   }
 
@@ -56,6 +57,12 @@ async function main() {
   let worker;
   try {
     let state = readState(false);
+    if (action === 'stop' || action === 'extend') {
+      if (!state) throw new Error(`Paper test durumu bulunamadi: ${statePath}`);
+      validateState(state);
+      await applyLifecycleAction(action, state);
+      return;
+    }
     if (!state) {
       const symbols = explicitSymbols.length
         ? explicitSymbols.slice(0, config.symbolCount)
@@ -68,6 +75,11 @@ async function main() {
       console.log(`Paper testi devam ediyor: ${state.symbols.length} sembol, baslangic ${state.startedAtIso}.`);
     }
 
+    if (!lifecycle.acceptingEntries(state)) {
+      await runManageOnlyCycle(state);
+      return;
+    }
+
     worker = startWorker();
     await loadStrategies(worker, state.symbols);
 
@@ -76,7 +88,7 @@ async function main() {
       saveState(state);
       const report = writeReport(state);
       printReport(report);
-      if (action === 'once' || Date.now() >= state.stopAt) break;
+      if (action === 'once' || !lifecycle.acceptingEntries(state)) break;
       const next = Math.floor(Date.now() / HOUR + 1) * HOUR + 15_000;
       const waitMs = Math.max(10_000, next - Date.now());
       console.log(`Sonraki 1 saatlik mum bekleniyor: ${new Date(Date.now() + waitMs).toLocaleString('tr-TR')}`);
@@ -86,6 +98,43 @@ async function main() {
     if (worker) worker.close();
     releaseLock();
   }
+}
+
+// Planlanan bitis gectiyse ya da test durdurulduysa yeni islem acilmaz; sadece acik pozisyonlar izlenir.
+async function runManageOnlyCycle(state) {
+  const now = Date.now();
+  if (Object.keys(state.positions).length) {
+    state.failures = await lifecycle.manageOpenPositions(state, lifecycleDeps(now));
+    updateMarkToMarket(state);
+    state.lastCycleAt = now;
+    state.lastCycleAtIso = new Date(now).toISOString();
+    state.cycles += 1;
+    saveState(state);
+  }
+  printReport(writeReport(state));
+}
+
+async function applyLifecycleAction(action, state) {
+  const now = Date.now();
+  if (action === 'stop') {
+    await lifecycle.stopAndCloseAll(state, lifecycleDeps(now));
+    updateMarkToMarket(state);
+  } else {
+    lifecycle.extendStopAt(state, Number(args['extend-days']), now);
+  }
+  saveState(state);
+  printReport(writeReport(state));
+}
+
+function lifecycleDeps(now) {
+  return {
+    now,
+    candleLimit: config.candleLimit,
+    positionInterval: (position) => position.interval || config.interval,
+    fetchCandles,
+    processPositionCandles,
+    closePosition,
+  };
 }
 
 function positionKey(symbol, interval) { return `${symbol}|${interval}`; }
@@ -163,10 +212,8 @@ async function runCycle(worker, state) {
       ? entry - targetDistance * config.stopTargetRatio
       : entry + targetDistance * config.stopTargetRatio;
     const targetPct = targetDistance / entry * 100;
-    const signalKey = [key, result.meta?.pattern, result.meta?.zigzag_length,
-      result.meta?.direction, result.meta?.d_time, result.meta?.signal_i].join('|');
-    if (state.seenSignalKeys.includes(signalKey)) continue;
-    state.seenSignalKeys.push(signalKey);
+    const signalKey = patternSignalKey(key, result.meta, latest.t);
+    if (signalAlreadyTraded(state, signalKey)) continue;
     candidates.push({
       key,
       symbol,
@@ -254,8 +301,24 @@ function openPosition(state, candidate) {
     lastCheckedT: candidate.signalTime,
     openedAtIso: new Date(candidate.entryTime).toISOString(),
   };
+  state.seenSignalKeys.push(candidate.signalKey);
   state.entries += 1;
   console.log(`ACILDI ${candidate.symbol} (${candidate.interval}) ${candidate.side.toUpperCase()} hedef=${candidate.targetPct.toFixed(3)}%`);
+}
+
+// Ayni pattern'e (ayni D noktasi) tek islem. Anahtar mum sirasini (signal_i) icermez:
+// signal_i her yeni mumda bir kaydigi icin, stop olan pattern son birkac mum icinde
+// sinyal vermeye devam ettikce "yeni sinyal" sayilip tekrar giriliyordu.
+function patternSignalKey(prefix, meta, signalTime) {
+  const dTime = Number(meta?.d_time);
+  const anchor = Number.isFinite(dTime) && dTime > 0 ? dTime : `signal-${signalTime}`;
+  return [prefix, meta?.pattern, meta?.zigzag_length, meta?.direction, anchor].join('|');
+}
+
+// Eski formatli anahtarlar ("...|d_time|signal_i") ayni pattern'in devami sayilir.
+function signalAlreadyTraded(state, signalKey) {
+  const legacyPrefix = `${signalKey}|`;
+  return state.seenSignalKeys.some((seen) => seen === signalKey || seen.startsWith(legacyPrefix));
 }
 
 function closePosition(state, position, rawExit, exitTime, reason) {
@@ -370,7 +433,7 @@ function validateState(state) {
 function buildReport(state) {
   updateMarkToMarket(state);
   const now = Date.now();
-  const elapsedDays = Math.max((now - state.startedAt) / DAY, 1 / 1440);
+  const elapsedDays = Math.max((lifecycle.reportEndTime(state, now) - state.startedAt) / DAY, 1 / 1440);
   const closed = state.trades.length;
   const wins = state.trades.filter((trade) => trade.netPnl > 0).length;
   const totalReturnPct = (state.equity / state.initialCapital - 1) * 100;
@@ -391,9 +454,10 @@ function buildReport(state) {
     generatedAtIso: new Date(now).toISOString(),
     startedAtIso: state.startedAtIso,
     stopAtIso: state.stopAtIso,
-    status: now >= state.stopAt ? 'completed' : state.status,
+    stoppedAtIso: state.stoppedAtIso || null,
+    status: lifecycle.lifecycleStatus(state, now),
     elapsedDays: round(elapsedDays, 4),
-    remainingDays: round(Math.max(0, (state.stopAt - now) / DAY), 4),
+    remainingDays: round(lifecycle.remainingMs(state, now) / DAY, 4),
     assumptions: {
       paperOnly: true,
       data: `Binance public spot klines (${config.intervals.join(', ')})`,

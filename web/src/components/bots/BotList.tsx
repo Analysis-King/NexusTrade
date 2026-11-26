@@ -7,7 +7,7 @@
 
 import { useState } from 'react';
 import { Activity, ChevronDown, ChevronUp, Plus, Loader2 } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { paperPortfoliosApi } from '@/api/endpoints';
 import { useAppStore, type Interval } from '@/store/app';
 import { Button } from '@/components/ui/Button';
@@ -87,10 +87,10 @@ function PaperPortfolioRow({ report }: { report: PaperPortfolioReport }): JSX.El
   const setDrawingMode = useAppStore((state) => state.setDrawingMode);
   const setSelectedPaperPosition = useAppStore((state) => state.setSelectedPaperPosition);
   const runtimeStatus = report.runtimeStatus ?? report.status;
-  const running = runtimeStatus === 'running';
-  const stale = runtimeStatus === 'stale' || report.runtimeStale === true || (report.status === 'running' && paperReportIsStale(report));
-  const active = running && !stale;
-  const badgeLabel = stale ? 'Guncel degil' : running ? 'Calisiyor' : 'Tamamlandi';
+  const updating = report.status === 'running' || report.status === 'closing';
+  const stale = runtimeStatus === 'stale' || report.runtimeStale === true || (updating && paperReportIsStale(report));
+  const active = report.status === 'running' && !stale;
+  const badge = paperStatusBadge(report, stale);
   const metrics = report.metrics;
   const duration = Math.max(report.elapsedDays + report.remainingDays, 0.0001);
   const progress = Math.max(0, Math.min(100, report.elapsedDays / duration * 100));
@@ -129,7 +129,7 @@ function PaperPortfolioRow({ report }: { report: PaperPortfolioReport }): JSX.El
           </div>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
-          <Badge variant={active ? 'bull' : stale ? 'warning' : 'muted'}>{badgeLabel}</Badge>
+          <Badge variant={badge.variant}>{badge.label}</Badge>
           {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </div>
       </button>
@@ -149,7 +149,7 @@ function PaperPortfolioRow({ report }: { report: PaperPortfolioReport }): JSX.El
       </div>
       <div className="mt-1 flex justify-between text-2xs text-muted">
         <span>{report.elapsedDays.toFixed(2)} gun</span>
-        <span>{report.remainingDays.toFixed(2)} gun kaldi</span>
+        <span>{paperRemainingLabel(report)}</span>
       </div>
 
       {expanded && (
@@ -185,10 +185,101 @@ function PaperPortfolioRow({ report }: { report: PaperPortfolioReport }): JSX.El
               ))}
             </div>
           )}
+
+          {report.controllable && <PaperPortfolioControls report={report} />}
         </div>
       )}
     </div>
   );
+}
+
+const EXTEND_DAYS = 30;
+
+function PaperPortfolioControls({ report }: { report: PaperPortfolioReport }): JSX.Element | null {
+  const qc = useQueryClient();
+  const [confirmStop, setConfirmStop] = useState(false);
+  const onSettled = (): Promise<void> => qc.invalidateQueries({ queryKey: ['paper-portfolios'] });
+  const stop = useMutation({
+    mutationFn: () => paperPortfoliosApi.stop(report.sourceFile),
+    onSettled,
+  });
+  const extend = useMutation({
+    mutationFn: () => paperPortfoliosApi.extend(report.sourceFile, EXTEND_DAYS),
+    onSettled,
+  });
+
+  if (report.status === 'stopped') return null;
+
+  const busy = Boolean(report.pendingAction) || stop.isPending || extend.isPending;
+  const expired = report.status === 'closing' || report.status === 'completed';
+  const openCount = report.openPositions.length;
+  const error = stop.error?.message ?? extend.error?.message ?? report.actionError;
+
+  const handleStop = (): void => {
+    if (!confirmStop) {
+      setConfirmStop(true);
+      window.setTimeout(() => setConfirmStop(false), 5000);
+      return;
+    }
+    setConfirmStop(false);
+    stop.mutate();
+  };
+
+  return (
+    <div className="mt-3 border-t border-border/60 pt-3">
+      <div className="flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={busy}
+          onClick={handleStop}
+          data-testid={`paper-portfolio-stop-${report.sourceFile}`}
+        >
+          {confirmStop ? 'Emin misin? Tekrar tikla' : 'Durdur'}
+        </Button>
+        {expired && (
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => extend.mutate()}
+            title={`Planlanan bitisi ${EXTEND_DAYS} gun ileri alir; portfoy yeniden yeni islem acar.`}
+          >
+            Sureyi {EXTEND_DAYS} gun uzat
+          </Button>
+        )}
+      </div>
+      {confirmStop && (
+        <div className="mt-2 text-2xs text-muted">
+          {openCount > 0
+            ? `${openCount} acik pozisyon son fiyattan kapatilir. `
+            : ''}
+          Portfoy bir daha islem acmaz; geri alinamaz.
+        </div>
+      )}
+      {error && <div className="mt-2 text-2xs text-bear">{error}</div>}
+    </div>
+  );
+}
+
+function paperStatusBadge(
+  report: PaperPortfolioReport,
+  stale: boolean
+): { label: string; variant: 'bull' | 'warning' | 'muted' } {
+  // Rozet buyuk harfle (tr) gosterilir; ASCII "i" orada "İ" olur, bu yuzden Turkce karakter.
+  if (report.pendingAction === 'stop') return { label: 'Durduruluyor…', variant: 'warning' };
+  if (report.pendingAction === 'extend') return { label: 'Uzatılıyor…', variant: 'warning' };
+  if (report.status === 'stopped') return { label: 'Durduruldu', variant: 'muted' };
+  if (stale) return { label: 'Güncel değil', variant: 'warning' };
+  if (report.status === 'running') return { label: 'Çalışıyor', variant: 'bull' };
+  if (report.status === 'closing') return { label: 'Kapanıyor', variant: 'muted' };
+  return { label: 'Tamamlandı', variant: 'muted' };
+}
+
+function paperRemainingLabel(report: PaperPortfolioReport): string {
+  if (report.status === 'stopped') return 'Durduruldu';
+  if (report.status === 'closing') return 'Sure doldu · yeni islem yok';
+  if (report.status === 'completed') return 'Tamamlandi';
+  return `${report.remainingDays.toFixed(2)} gun kaldi`;
 }
 
 function PaperMetric({ label, value }: { label: string; value: string }): JSX.Element {

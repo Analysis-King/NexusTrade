@@ -14,9 +14,9 @@ import { Input } from '@/components/ui/Input';
 import { BotList } from './BotList';
 import { BotDetail } from './BotDetail';
 import { CreateBotModal } from './CreateBotModal';
-import { useBots } from '@/hooks/useBots';
+import { BOT_FALLBACK_POLL_MS, useBots } from '@/hooks/useBots';
 import { cn } from '@/lib/cn';
-import { formatPrice, formatTimeShort } from '@/lib/format';
+import { formatPrice, formatSignedUsd, formatTimeShort } from '@/lib/format';
 import { useAppStore, type Interval } from '@/store/app';
 import type {
   BotConfig,
@@ -334,13 +334,14 @@ function OrderHistoryPanel(): JSX.Element {
   const paperPortfolios = useQuery({
     queryKey: ['paper-portfolios'],
     queryFn: () => paperPortfoliosApi.list(),
-    refetchInterval: 5_000,
+    refetchInterval: 15_000,
   });
+  // Pozisyon acilip kapaninca WS olayi islemleri tazeler; yoklama yedek.
   const tradeQueries = useQueries({
     queries: bots.map((bot) => ({
       queryKey: ['bots', bot.id, 'trades', 20],
       queryFn: () => botsApi.trades(bot.id, 20),
-      refetchInterval: 5_000,
+      refetchInterval: BOT_FALLBACK_POLL_MS,
     })),
   });
 
@@ -394,7 +395,7 @@ function PositionsPanel({ onSelectBot }: { onSelectBot: (id: string) => void }):
   const paperPortfolios = useQuery({
     queryKey: ['paper-portfolios'],
     queryFn: () => paperPortfoliosApi.list(),
-    refetchInterval: 5_000,
+    refetchInterval: 15_000,
   });
   const snapshots = useBotSnapshots(bots);
   const setSymbol = useAppStore((state) => state.setSymbol);
@@ -475,7 +476,7 @@ function PositionsPanel({ onSelectBot }: { onSelectBot: (id: string) => void }):
             <div className="grid grid-cols-2 gap-2 text-xs">
               <PositionMetric label="Giriş" value={`$${formatPrice(position.entryPrice)}`} />
               {row.kind === 'bot' ? (
-                <PositionMetric label="PnL" value={`${pnl! >= 0 ? '+' : ''}$${formatPrice(Math.abs(pnl!))}`} tone={pnl! >= 0 ? 'bull' : 'bear'} />
+                <PositionMetric label="PnL" value={formatSignedUsd(pnl!)} tone={pnl! >= 0 ? 'bull' : 'bear'} />
               ) : (
                 <PositionMetric label="Hedef" value={`%${row.paperPosition.targetPct.toFixed(2)}`} tone="bull" />
               )}
@@ -592,7 +593,7 @@ function useBotSnapshots(bots: BotConfig[]) {
     queries: bots.map((bot) => ({
       queryKey: ['bots', bot.id],
       queryFn: () => botsApi.get(bot.id),
-      refetchInterval: 5_000,
+      refetchInterval: BOT_FALLBACK_POLL_MS,
     })),
   });
 }
@@ -689,7 +690,7 @@ function TradeHistoryRow({
         )}
       </span>
       <span className={cn('text-right font-mono tabular-nums', pnl > 0 ? 'text-bull' : pnl < 0 ? 'text-bear' : 'text-muted')}>
-        {trade.pnlUsd === undefined ? '-' : `${pnl >= 0 ? '+' : ''}$${formatPrice(Math.abs(pnl))}`}
+        {trade.pnlUsd === undefined ? '-' : formatSignedUsd(pnl)}
       </span>
     </div>
   );

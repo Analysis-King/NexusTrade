@@ -98,7 +98,21 @@ type OverlayElement =
       isUp: boolean;
       stackIndex: number;
       xOffset: number;
+      /** Etiketin sag kenari bu x'i gecmez; fiyat eksenindeki etiketleri ortmesin. */
+      maxRight: number;
     };
+
+/**
+ * Fiyat ekseni ondalik hassasiyeti: ~5 anlamli basamak (en az 2, en fazla 8).
+ * Kutuphane varsayilani 2 ondalik oldugundan ADA gibi dusuk fiyatli coinlerde
+ * eksen, SL/TP ve giris etiketleri "0.14" gibi ayni degere yuvarlaniyordu.
+ *   60000 -> 2 · 150 -> 2 · 1.5 -> 4 · 0.1445 -> 5 · 0.00001234 -> 8
+ */
+function pricePrecisionFor(price: number | undefined): number {
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return 2;
+  const digitsBeforePoint = Math.floor(Math.log10(price)) + 1;
+  return Math.max(2, Math.min(8, 5 - digitsBeforePoint));
+}
 
 function toChartTime(raw: number): UTCTimestamp {
   return Math.floor(raw > 1_000_000_000_000 ? raw / 1000 : raw) as UTCTimestamp;
@@ -109,9 +123,10 @@ function pointValue(point: DrawingPoint): number | null {
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
 }
 
-function clampOverlayX(x: number, width: number): number {
-  if (!Number.isFinite(x) || width <= 0) return x;
-  return Math.max(8, Math.min(width - 72, x));
+/** x'i cizim alanina (fiyat ekseni haric) sigdirir; plotWidth = timeScale().width(). */
+function clampOverlayX(x: number, plotWidth: number): number {
+  if (!Number.isFinite(x) || plotWidth <= 0) return x;
+  return Math.max(8, Math.min(plotWidth - 8, x));
 }
 
 function widthOf(raw: unknown, fallback = 1): number {
@@ -127,58 +142,27 @@ function dashOf(style?: string): string | undefined {
   return undefined;
 }
 
-function buildActivePositionDrawings(candles: Candle[], position: Position | null): StrategyDrawing[] {
-  if (!position || candles.length === 0) return [];
-  const last = candles[candles.length - 1]!;
-  const prev = candles.length > 1 ? candles[candles.length - 2] : undefined;
-  const step = prev ? Math.max(60_000, last.openTime - prev.openTime) : 60_000;
-  const start = last.openTime;
-  const end = start + step * 8;
-  const group = 'active-position-levels';
-  const rows: Array<{ price?: number; text: string; color: string; style?: string }> = [
-    { price: position.entryPrice, text: 'Giriş', color: '#cbd5e1', style: 'dotted' },
-    { price: position.takeProfitPrice, text: 'TP', color: '#22c55e', style: 'dashed' },
-    { price: position.stopLossPrice, text: 'SL', color: '#ef4444', style: 'dashed' },
-  ];
-
-  return rows.flatMap((row): StrategyDrawing[] => {
-    if (typeof row.price !== 'number' || !Number.isFinite(row.price)) return [];
-    const point = { time: end, price: row.price };
-    return [
-      {
-        type: 'line',
-        first: { time: start, price: row.price },
-        second: point,
-        color: row.color,
-        style: row.style,
-        width: 2,
-        group,
-      },
-      {
-        type: 'label',
-        point,
-        text: row.text,
-        color: row.color,
-        textcolor: '#0f172a',
-        style: row.text.includes('SL') ? 'label_down' : 'label_up',
-        size: 'tiny',
-        group,
-      },
-    ];
-  });
-}
-
-const HIDDEN_ACTIVE_PATTERN_ROLES = new Set([
+// Strateji cizimlerindeki tahmini seviyeler: pattern'in kendi SL/TP rehberi,
+// hedefleri ve teyit bolgesi. Acik pozisyon yokken "bu setup'a girilse seviyeler
+// ne olurdu" bilgisini verir. Pozisyon acikken ise pozisyonun gercek
+// Giris/SL/TP setiyle ayni isimlerde ikinci bir set olusturup hangisinin gercek
+// oldugunu belirsizlestirir; o durumda yalnizca pozisyonun seviyeleri cizilir.
+const PATTERN_LEVEL_ROLES = new Set([
   'confirmation',
   'entry_guide',
   'stop_guide',
   'take_profit_guide',
+  'target_1',
   'target_2',
 ]);
 
+function withoutPatternLevels(drawings: StrategyDrawing[]): StrategyDrawing[] {
+  return drawings.filter((drawing) => !PATTERN_LEVEL_ROLES.has(drawing.role ?? ''));
+}
+
 // Gecmis setup'larin kendi TP/SL seviyeleri ayni fiyat skalasinda ust uste
-// yigilir. Pozisyonun gecerli seviyeleri buildActivePositionDrawings ile tek
-// bir set olarak cizilir; burada yalnizca tarihsel risk cizimlerini ayikliyoruz.
+// yigilir. Pozisyonun gecerli seviyeleri mum serisine fiyat cizgisi olarak tek
+// bir set halinde cizilir; burada yalnizca tarihsel risk cizimlerini ayikliyoruz.
 const HISTORICAL_RISK_LEVEL_ROLES = new Set([
   'strategy_stop',
   'strategy_target',
@@ -188,19 +172,14 @@ function withoutHistoricalRiskLevels(drawings: StrategyDrawing[]): StrategyDrawi
   return drawings.filter((drawing) => !HISTORICAL_RISK_LEVEL_ROLES.has(drawing.role ?? ''));
 }
 
-function simplifyActivePatternDrawings(drawings: StrategyDrawing[]): StrategyDrawing[] {
-  return drawings.flatMap((drawing) => {
-    if (drawing.role && HIDDEN_ACTIVE_PATTERN_ROLES.has(drawing.role)) return [];
-    if (drawing.type === 'label' && drawing.role === 'target_1') {
-      return [{ ...drawing, text: 'T1', size: 'tiny' }];
-    }
-    return [drawing];
-  });
-}
-
-function selectPaperPatternDrawings(
+/**
+ * Pozisyonu acan pattern'in cizim grubunu bulur. Pozisyon meta'sindaki
+ * pattern/direction/zigzag_length etiketiyle eslesen gruplardan D zamani en
+ * yakin olani secilir. Eslesme yoksa bos doner.
+ */
+function selectPositionPatternDrawings(
   drawings: StrategyDrawing[],
-  position: { meta?: Record<string, unknown> } | undefined
+  position: { meta?: Record<string, unknown> } | null | undefined
 ): StrategyDrawing[] {
   if (!position || drawings.length === 0) return [];
   const meta = position.meta ?? {};
@@ -220,9 +199,7 @@ function selectPaperPatternDrawings(
     if (!Number.isFinite(dTime)) return 0;
     return Math.abs(Number(a.point.time) - dTime) - Math.abs(Number(b.point.time) - dTime);
   })[0];
-  return selected?.group
-    ? simplifyActivePatternDrawings(drawings.filter((drawing) => drawing.group === selected.group))
-    : [];
+  return selected?.group ? drawings.filter((drawing) => drawing.group === selected.group) : [];
 }
 
 export function Chart(): JSX.Element {
@@ -312,43 +289,53 @@ export function Chart(): JSX.Element {
     staleTime: 10_000,
   });
   const selectedPaperDrawings = useMemo(
-    () => selectPaperPatternDrawings(paperStrategyDrawings.data ?? [], selectedPaperRaw),
+    () => selectPositionPatternDrawings(paperStrategyDrawings.data ?? [], selectedPaperRaw),
     [paperStrategyDrawings.data, selectedPaperRaw]
   );
+  // Baska bir sembole gecildiyse botun pozisyon seviyeleri bu grafige ait degildir.
+  const selectedBotPosition =
+    selectedBot?.config.symbol === symbol ? selectedBot.state.position ?? null : null;
+  const activePosition = selectedPaperAsPosition ?? selectedBotPosition;
   const visibleDrawings = useMemo(() => {
     if (drawingMode === 'hidden') return [];
     const botDrawings = selectedDrawings ?? [];
     const paperDrawings = selectedPaperRaw ? selectedPaperDrawings : [];
     const activeIndicatorDrawings = activeIndicatorIds.length ? indicatorDrawings.data ?? [] : [];
-    const activePositionDrawings = buildActivePositionDrawings(
-      candles ?? [],
-      selectedPaperAsPosition ?? selectedBot?.state.position ?? null
-    );
+    // Acik pozisyon varken grafikteki tek Giris/SL/TP seti pozisyonun kendisidir
+    // (asagidaki fiyat cizgisi efekti); stratejinin tahmini seviyeleri gizlenir.
+    const hasOpenPosition = Boolean(activePosition || selectedPaperRaw);
+    const strategyView = (drawings: StrategyDrawing[]): StrategyDrawing[] => {
+      const cleaned = withoutHistoricalRiskLevels(drawings);
+      return hasOpenPosition ? withoutPatternLevels(cleaned) : cleaned;
+    };
     if (drawingMode === 'all') {
       return [
         ...activeIndicatorDrawings,
-        ...withoutHistoricalRiskLevels(botDrawings),
-        ...withoutHistoricalRiskLevels(paperDrawings),
-        ...activePositionDrawings,
+        ...strategyView(botDrawings),
+        ...strategyView(paperDrawings),
       ];
     }
-    const strategyDrawings = paperDrawings.length ? paperDrawings : botDrawings;
+    // "Son" modunda pozisyonu acan pattern gosterilir; bulunamazsa en son pattern.
+    const botPositionDrawings = selectedBotPosition
+      ? selectPositionPatternDrawings(botDrawings, selectedBotPosition)
+      : [];
+    const strategyDrawings = paperDrawings.length
+      ? paperDrawings
+      : botPositionDrawings.length
+        ? botPositionDrawings
+        : botDrawings;
     const firstGrouped = strategyDrawings.find((drawing) => typeof drawing.group === 'string' && drawing.group);
     if (firstGrouped?.group) {
       return [
         ...activeIndicatorDrawings,
-        ...withoutHistoricalRiskLevels(
-          strategyDrawings.filter((drawing) => drawing.group === firstGrouped.group)
-        ),
-        ...activePositionDrawings,
+        ...strategyView(strategyDrawings.filter((drawing) => drawing.group === firstGrouped.group)),
       ];
     }
     return [
       ...activeIndicatorDrawings,
-      ...withoutHistoricalRiskLevels(strategyDrawings.slice(-10)),
-      ...activePositionDrawings,
+      ...strategyView(strategyDrawings.slice(-10)),
     ];
-  }, [activeIndicatorIds.length, candles, drawingMode, indicatorDrawings.data, selectedBot?.state.position, selectedDrawings, selectedPaperAsPosition, selectedPaperDrawings, selectedPaperRaw]);
+  }, [activeIndicatorIds.length, activePosition, drawingMode, indicatorDrawings.data, selectedBotPosition, selectedDrawings, selectedPaperDrawings, selectedPaperRaw]);
   const [overlayElements, setOverlayElements] = useState<OverlayElement[]>([]);
 
   // İki ayrı container — main (mum/volume/ema) ve sub (RSI)
@@ -379,13 +366,18 @@ export function Chart(): JSX.Element {
       return;
     }
 
+    // Sagdaki fiyat ekseni haric cizim alani genisligi.
+    const plotWidth = chart.timeScale().width();
+    // Acik pozisyonda Giris/SL/TP basliklari cizim alaninin sag kenarina yazilir;
+    // pattern etiketleri onlarin ustune binmesin diye o seridi bos birak.
+    const labelRightEdge = plotWidth - (activePosition ? 64 : 4);
     const timeScale = chart.timeScale() as {
       timeToCoordinate: (time: UTCTimestamp) => number | null;
     };
     const timeToX = (rawTime: number): number | null => {
       const chartTime = toChartTime(rawTime);
       const direct = timeScale.timeToCoordinate(chartTime);
-      const width = mainContainerRef.current?.clientWidth ?? 0;
+      const width = plotWidth;
       if (direct !== null) return clampOverlayX(Number(direct), width);
 
       const candles = candlesRef.current;
@@ -495,6 +487,7 @@ export function Chart(): JSX.Element {
           isUp,
           stackIndex,
           xOffset: oppositeCollisions === 0 ? 0 : (isUp ? -64 : 64) * oppositeCollisions,
+          maxRight: labelRightEdge,
         });
       }
     });
@@ -670,6 +663,45 @@ export function Chart(): JSX.Element {
     };
   }, []);
 
+  /* ─── Açık pozisyonun Giriş / SL / TP seviyeleri ─────── */
+  // Mum serisine fiyat çizgisi olarak çizilir: çizgi tam o fiyatta durur,
+  // fiyatı sağdaki eksende, adı çizginin üstünde görünür. Overlay etiketleri
+  // yakın seviyelerde üst üste kaydırıldığı için hangi etiketin hangi çizgiye
+  // ait olduğu karışıyordu.
+  const positionEntry = activePosition?.entryPrice;
+  const positionTp = activePosition?.takeProfitPrice;
+  const positionSl = activePosition?.stopLossPrice;
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || drawingMode === 'hidden') return;
+    const levels = [
+      { price: positionEntry, title: 'Giriş', color: '#cbd5e1', lineStyle: LineStyle.Dotted },
+      { price: positionTp, title: 'TP', color: '#22c55e', lineStyle: LineStyle.Dashed },
+      { price: positionSl, title: 'SL', color: '#ef4444', lineStyle: LineStyle.Dashed },
+    ];
+    const lines = levels.flatMap((level) =>
+      typeof level.price === 'number' && Number.isFinite(level.price)
+        ? [series.createPriceLine({
+            price: level.price,
+            color: level.color,
+            lineWidth: 2,
+            lineStyle: level.lineStyle,
+            axisLabelVisible: true,
+            title: level.title,
+          })]
+        : []
+    );
+    return () => {
+      for (const line of lines) {
+        try {
+          series.removePriceLine(line);
+        } catch {
+          /* chart zaten kaldırıldı */
+        }
+      }
+    };
+  }, [drawingMode, positionEntry, positionSl, positionTp]);
+
   /* ─── Tarihsel veri yükleme ──────────────────────────── */
   // Veriyi chart'a aktar
   useEffect(() => {
@@ -678,6 +710,13 @@ export function Chart(): JSX.Element {
 
     candlesRef.current = [...candles];
 
+    const precision = pricePrecisionFor(candles.at(-1)?.close);
+    candleSeriesRef.current.applyOptions({
+      priceFormat: { type: 'price', precision, minMove: 10 ** -precision },
+    });
+    emaSeriesRef.current.applyOptions({
+      priceFormat: { type: 'price', precision, minMove: 10 ** -precision },
+    });
     candleSeriesRef.current.setData(candles.map(toCandleData));
     volumeSeriesRef.current.setData(candles.map(toVolumeData));
 
@@ -819,8 +858,12 @@ export function Chart(): JSX.Element {
             }
             const labelWidth = Math.max(56, Math.min(220, el.text.length * 7 + 18));
             const labelHeight = 22;
-            const labelCenterX = el.x + el.xOffset;
-            const labelX = labelCenterX - labelWidth / 2;
+            // Sag kenara yakin etiketler fiyat eksenine tasmasin diye sola kaydirilir.
+            const labelX = Math.max(
+              4,
+              Math.min(el.x + el.xOffset - labelWidth / 2, el.maxRight - labelWidth)
+            );
+            const labelCenterX = labelX + labelWidth / 2;
             const stackOffset = el.stackIndex * (labelHeight + 4);
             const labelY = el.isUp
               ? el.y - labelHeight - 8 - stackOffset
