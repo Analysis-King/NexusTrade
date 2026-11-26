@@ -8,27 +8,31 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const DAY = 86_400_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const SYMBOL_COUNT = 30;
-const TIMEFRAMES = ['1h', '4h'];
-const PERIOD_DAYS = 91;
-const STRATEGY_FILE = 'harmonic_abcd_bullish_v2.py';
+const SYMBOL_COUNT = 15;
+const TIMEFRAME = '1h';
+const PERIOD_DAYS = 365;
+const STRATEGY_FILE = 'harmonic_edge_candidates_v2.py';
 const WORKER_FILE = 'python/workers/pool_worker_v2.py';
 
-const GRID = [
-  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 0.6, min_reward_risk: 0.5, min_quality: 60 },
-  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 1.0, min_reward_risk: 0.5, min_quality: 60 },
-  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 1.0, min_reward_risk: 0.5, min_quality: 0 },
-  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 0.2, min_reward_risk: 0.5, min_quality: 0 },
-];
+const GRID = [];
+for (const take_profit_mode of ['target_1', 'target_2']) {
+  for (const stop_loss_target_ratio of [0.2, 0.4, 0.6, 1.0]) {
+    for (const min_reward_risk of [0.3, 0.5]) {
+      for (const min_quality of [0, 60]) {
+        GRID.push({ take_profit_mode, stop_loss_mode: 'target_ratio', stop_loss_target_ratio, min_reward_risk, min_quality });
+      }
+    }
+  }
+}
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const OUT_JSON = path.resolve(ROOT, `data/_validate_abcd_3m_${stamp}.json`);
-const OUT_MD = path.resolve(ROOT, `data/_validate_abcd_3m_${stamp}.md`);
-const PROGRESS_PATH = path.resolve(ROOT, `data/_validate_abcd_3m_${stamp}.progress.json`);
+const OUT_JSON = path.resolve(ROOT, `data/harmonic_exit_sweep_v2_${stamp}.json`);
+const OUT_MD = path.resolve(ROOT, `data/harmonic_exit_sweep_v2_${stamp}.md`);
+const PROGRESS_PATH = path.resolve(ROOT, `data/harmonic_exit_sweep_v2_${stamp}.progress.json`);
 
 main().catch((error) => {
   console.error(`Exit sweep durdu: ${error.stack || error.message}`);
@@ -39,21 +43,19 @@ async function main() {
   console.log(`[${new Date().toISOString()}] Sembol listesi cekiliyor...`);
   const symbols = await fetchTopUsdtSymbols(SYMBOL_COUNT);
   console.log(`Secilen ${symbols.length} sembol: ${symbols.join(', ')}`);
-  console.log(`Grid boyutu: ${GRID.length} config x ${symbols.length} sembol x ${TIMEFRAMES.length} TF = ${GRID.length * symbols.length * TIMEFRAMES.length} calistirma`);
+  console.log(`Grid boyutu: ${GRID.length} config x ${symbols.length} sembol = ${GRID.length * symbols.length} calistirma`);
 
   console.log('Mum verileri cekiliyor (bir kez, tum configler icin yeniden kullanilacak)...');
   const candlesBySymbol = new Map();
   for (const symbol of symbols) {
-    for (const interval of TIMEFRAMES) {
-      try {
-        const candles = await fetchCandles(symbol, interval, PERIOD_DAYS);
-        if (candles.length >= 60) candlesBySymbol.set(`${symbol}|${interval}`, candles);
-      } catch (error) {
-        console.error(`[SKIP] ${symbol} ${interval} veri alinamadi: ${error.message}`);
-      }
+    try {
+      const candles = await fetchCandles(symbol, TIMEFRAME, PERIOD_DAYS);
+      if (candles.length >= 60) candlesBySymbol.set(symbol, candles);
+    } catch (error) {
+      console.error(`[SKIP] ${symbol} veri alinamadi: ${error.message}`);
     }
   }
-  console.log(`${candlesBySymbol.size} sembol/TF kombinasyonu icin veri hazir.`);
+  console.log(`${candlesBySymbol.size} sembol icin veri hazir.`);
 
   const worker = startWorker();
   const results = [];
@@ -64,10 +66,9 @@ async function main() {
     for (const config of GRID) {
       const configLabel = `tp=${config.take_profit_mode},sl_ratio=${config.stop_loss_target_ratio},rr=${config.min_reward_risk},q=${config.min_quality}`;
       const configTrades = [];
-      for (const [key, candles] of candlesBySymbol) {
-        const symbol = key;
+      for (const [symbol, candles] of candlesBySymbol) {
         done += 1;
-        const instance = `sw_${key.replace('|', '_')}_${Math.random().toString(16).slice(2, 8)}`;
+        const instance = `sw_${symbol}_${Math.random().toString(16).slice(2, 8)}`;
         try {
           const runParams = { max_position_pct: 100, ...config };
           await worker.request('load', { instance, strategy_file: STRATEGY_FILE, params: runParams });
@@ -126,7 +127,7 @@ function buildReport(results, symbols) {
   lines.push(`# Harmonik Cikis Parametresi Taramasi (V2) — ${stamp}`);
   lines.push('');
   lines.push(`Strateji: \`${STRATEGY_FILE}\` (PF>1 pattern alt-kumesi kilitli, cikis parametreleri taraniyor)`);
-  lines.push(`Sembol sayisi: ${symbols.length}, Zaman dilimleri: ${TIMEFRAMES.join(', ')}, Periyot: ${PERIOD_DAYS}g`);
+  lines.push(`Sembol sayisi: ${symbols.length}, Zaman dilimi: ${TIMEFRAME}, Periyot: ${PERIOD_DAYS}g`);
   lines.push('');
   lines.push('## Sonuclar (Profit Factor\'a gore siralandi, en az 20 islem sarti)');
   lines.push('');

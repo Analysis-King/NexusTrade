@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const WebSocket = require("ws");
 
-const ROOT = path.resolve(__dirname, "..");
+const ROOT = path.resolve(__dirname, "..", "..");
 const DAY = 86_400_000;
 
 function parseArgs(argv) {

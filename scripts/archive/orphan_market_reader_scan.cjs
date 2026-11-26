@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DAY = 86_400_000;
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const args = parseArgs(process.argv.slice(2));
 const outputName = String(args.out || 'orphan_market_reader_scan').replace(/[^a-zA-Z0-9_-]/g, '_');
 const OUT_JSON = path.join(ROOT, 'data', `${outputName}.json`);

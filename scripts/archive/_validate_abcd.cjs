@@ -8,29 +8,27 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const DAY = 86_400_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const SYMBOL_COUNT = 30;
 const TIMEFRAMES = ['1h', '4h'];
-const PERIOD_DAYS = 365;
+const PERIOD_DAYS = 91;
 const STRATEGY_FILE = 'harmonic_abcd_bullish_v2.py';
 const WORKER_FILE = 'python/workers/pool_worker_v2.py';
 
-const GRID = [];
-for (const take_profit_mode of ['target_1', 'target_2']) {
-  for (const stop_loss_target_ratio of [0.2, 0.3, 0.4, 0.6, 1.0]) {
-    for (const min_quality of [0, 60]) {
-      GRID.push({ take_profit_mode, stop_loss_mode: 'target_ratio', stop_loss_target_ratio, min_reward_risk: 0.5, min_quality });
-    }
-  }
-}
+const GRID = [
+  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 0.6, min_reward_risk: 0.5, min_quality: 60 },
+  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 1.0, min_reward_risk: 0.5, min_quality: 60 },
+  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 1.0, min_reward_risk: 0.5, min_quality: 0 },
+  { take_profit_mode: 'target_2', stop_loss_mode: 'target_ratio', stop_loss_target_ratio: 0.2, min_reward_risk: 0.5, min_quality: 0 },
+];
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const OUT_JSON = path.resolve(ROOT, `data/harmonic_abcd_sweep_v2_${stamp}.json`);
-const OUT_MD = path.resolve(ROOT, `data/harmonic_abcd_sweep_v2_${stamp}.md`);
-const PROGRESS_PATH = path.resolve(ROOT, `data/harmonic_abcd_sweep_v2_${stamp}.progress.json`);
+const OUT_JSON = path.resolve(ROOT, `data/_validate_abcd_3m_${stamp}.json`);
+const OUT_MD = path.resolve(ROOT, `data/_validate_abcd_3m_${stamp}.md`);
+const PROGRESS_PATH = path.resolve(ROOT, `data/_validate_abcd_3m_${stamp}.progress.json`);
 
 main().catch((error) => {
   console.error(`Exit sweep durdu: ${error.stack || error.message}`);

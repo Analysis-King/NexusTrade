@@ -68,38 +68,40 @@ Madde numaralarındaki K/Y/O kodları [01-SISTEM-INCELEMESI.md](01-SISTEM-INCELE
 
 | No | İş | Bulgu | Efor | Durum (2026-11-26) |
 |---|---|---|---|---|
-| F0-1 | Bekleyen değişiklikleri commit et, dalları GitHub'a gönder | K-4, O-2 | S | Dal GitHub'da (`chore/faz0-toparlanma`, 2026-11-27); `main`'e birleştirme bekliyor |
+| F0-1 | Bekleyen değişiklikleri commit et, dalları GitHub'a gönder | K-4, O-2 | S | Bitti: PR #1 ile `main`'e birleştirildi (2026-11-27) |
 | F0-2 | `data/` için günlük yedekleme script'i ve zamanlayıcı (mum önbelleği hariç) | K-4 | S | Script hazır (`npm run backup:data`); zamanlayıcı kurulmadı |
 | F0-3 | Negatif PnL'yi eksi işaretiyle göster (5 yer) | K-5 | S | Bitti |
 | F0-4 | Paper portföylere "Durdur"; bitiş tarihinde yeni işlem açmayı kes; kaybedenleri durdur | K-6 | M | Kod bitti; backend yeniden başlatılınca düğmeler görünür. Kaybedenleri durdurmak senin kararın |
 | F0-5 | `.env.example` içindeki değerleri yer tutucuyla değiştir, kullanılan secret'ları yenile | K-3 | S | Örnek dosya temizlendi; `.env`'deki değerleri yenilemek sende |
-| F0-6 | Kullanılmayan strateji ve script'leri arşive taşı; `public/` ve başlatıcı binary'lerini temizle | O-1 | M | Envanter ve öneri hazır (aşağıda); taşıma onay bekliyor |
+| F0-6 | Kullanılmayan strateji ve script'leri arşive taşı; `public/` ve başlatıcı binary'lerini temizle | O-1 | M | Bitti (2026-11-27): script'ler arşivde, başlatıcının dört dosyası git'te. `public/` Faz 1'de kaldırılacak |
 | F0-7 | Deney kaydındaki eski deneyleri tamamla (Haziran ve Temmuz raporlarından) | Y-3 | S | Bitti (EXP-011 - EXP-018) |
 | F0-8 | Backend çökmesini kapat (ayrı oturumda devam ediyor) | K-2 | M | Ayrı oturumda |
 
 **Kapı:** Her şey yedekli ve GitHub'da. Çalışan her bot ve portföy arayüzde görünüyor ve durdurulabiliyor.
 Ekrandaki sayılar doğru.
 
-#### F0-6 envanteri ve önerisi (2026-11-26, uygulanmadı)
+#### F0-6 envanteri ve önerisi (2026-11-26; script kısmı 2026-11-27'de uygulandı)
 
 - **Script'ler (65):**
-  - 12'si sistem tarafından kullanılıyor: `package.json`, supervisor, başlatıcı.
-  - Faz 1-2 için gerekenler:
+  - `scripts/` altında kalan 12 dosya ve `lib/` sistemin parçası: `package.json` komutları, supervisor,
+    başlatıcı ve `test-pool.ps1` (worker havuzu deneme aracı).
+  - Yine `scripts/` altında kalan Faz 1-2 araçları:
     - `nested_strategy_selector.cjs` + `strategy_portfolio_blend.cjs` (EXP-013c yeniden testi)
     - `orphan_market_reader_walk_forward*.cjs` (adı yanıltıcı; "Strategy Walk-Forward" raporlarını üreten genel
       walk-forward)
     - `harmonic_exit_optimizer.cjs` (F1-6 karşılaştırması)
-  - Kalan ~45 script kapanmış deneylerin araştırma araçları (EXP-011 - EXP-018). Öneri: `scripts/archive/`
-    altına taşınsın ve bakımı yapılmasın. Taşınınca içlerindeki `__dirname/..` kök yolu bozulur; yeniden
-    çalıştırmak gerekirse geri taşınır.
+  - **Yapıldı:** kalan 48 script, kapanmış deneylerin araçları, `scripts/archive/` altına taşındı. Bakımı
+    yapılmıyor. Kök klasörü kendi konumundan bulan 13'ünün yolu düzeltildi; hepsi eskisi gibi repo kökünden
+    çalışır (bkz. `scripts/archive/README.md`).
 - **Strateji dosyaları (33):** Şimdilik hiçbiri taşınmasın. EXP-013c'nin yeniden testi 16 aileyi kullanıyor.
   Faz 2 bitince kalanlar arşive.
 - **`public/`:** Backend 3000 portunda bunu sunuyor (eski arayüz, `src/app.ts` `express.static`). Gerçek
   arayüz Vite (5173). Öneri: Faz 1'de statik sunum ve `public/` kaldırılsın.
-- **Başlatıcı:** Kökteki `NexusTrade Baslat.exe` git'te. Çalışması için yanındaki `.dll`,
-  `.deps.json` ve `.runtimeconfig.json` dosyaları da gerekiyor, ama onlar git'te değil; temiz bir klonda
-  çalışmaz. Karar gerekiyor: ya dördü birlikte git'e girsin, ya hepsi çıkarılıp
-  `dotnet build tools/NexusTradeLauncher` ile üretilsin.
+- **Başlatıcı (yapıldı, 2026-11-27):** Kökteki `NexusTrade Baslat.exe` ile yanındaki `.dll`, `.deps.json` ve
+  `.runtimeconfig.json` artık birlikte git'te; temiz bir klonda da çalışır. Bu bir .NET 8 derlemesi, makinede
+  .NET 8 Runtime gerekir; yoksa aynı işi yapan `NexusTrade Baslat.cmd` kullanılır.
+  `tools/NexusTradeLauncher/Program.cs` değişirse: `dotnet build tools/NexusTradeLauncher -c Release`, sonra
+  `bin/Release/net8.0/` altındaki dört `NexusTrade Baslat.*` dosyasını köke kopyala ve dördünü birlikte commit et.
 - **Yapıldı:** Başlatıcının `bin/`, `obj/` ve boş `NuGet/` klasörleri `.gitignore`'a eklendi.
 
 ### Faz 1 · Tek ölçüm hattı

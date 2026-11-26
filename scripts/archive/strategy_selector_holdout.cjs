@@ -11,7 +11,7 @@ const {
   median,
   round,
   stddev,
-} = require("./strategy_portfolio_blend.cjs");
+} = require("../strategy_portfolio_blend.cjs");
 
 function parseArgs(argv) {
   const args = {

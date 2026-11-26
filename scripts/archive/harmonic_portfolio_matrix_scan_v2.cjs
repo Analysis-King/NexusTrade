@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Harmonik Portfoy stratejisini (harmonic_portfolio_candidate.py) 50 sembol x 4 zaman dilimi x 4 periyot
-// matrisinde backtest eden tek seferlik arastirma scripti. Uretim/canli akisla ilgisi yoktur.
+// V2: Harmonik Portfoy stratejisinin V2 kopyasini (harmonic_portfolio_candidate_v2.py) V2 motoruyla
+// (pool_worker_v2.py - equity-olcekli sizing + likidasyon + maliyetli drawdown duzeltmeleri) 50 sembol x
+// 4 zaman dilimi x 4 periyot matrisinde backtest eden arastirma scripti. Uretim/canli akisla ilgisi yoktur.
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const DAY = 86_400_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -19,12 +20,13 @@ const PERIODS = [
   { label: '3m', days: 91 },
 ];
 const MAX_DAYS = Math.max(...PERIODS.map((p) => p.days));
-const STRATEGY_FILE = 'harmonic_portfolio_candidate.py';
+const STRATEGY_FILE = 'harmonic_portfolio_candidate_v2.py';
+const WORKER_FILE = 'python/workers/pool_worker_v2.py';
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const OUT_JSON = path.resolve(ROOT, `data/harmonic_portfolio_matrix_${stamp}.json`);
-const OUT_MD = path.resolve(ROOT, `data/harmonic_portfolio_matrix_${stamp}.md`);
-const PROGRESS_PATH = path.resolve(ROOT, `data/harmonic_portfolio_matrix_${stamp}.progress.json`);
+const OUT_JSON = path.resolve(ROOT, `data/harmonic_portfolio_matrix_v2_${stamp}.json`);
+const OUT_MD = path.resolve(ROOT, `data/harmonic_portfolio_matrix_v2_${stamp}.md`);
+const PROGRESS_PATH = path.resolve(ROOT, `data/harmonic_portfolio_matrix_v2_${stamp}.progress.json`);
 
 main().catch((error) => {
   console.error(`Matrix scan durdu: ${error.stack || error.message}`);
@@ -66,7 +68,8 @@ async function main() {
           const startTime = Date.now() - period.days * DAY;
           const instance = `mx_${symbol}_${interval}_${period.label}_${Math.random().toString(16).slice(2, 8)}`;
           try {
-            await worker.request('load', { instance, strategy_file: STRATEGY_FILE, params: {} });
+            const runParams = { max_position_pct: 100 };
+            await worker.request('load', { instance, strategy_file: STRATEGY_FILE, params: runParams });
             const result = await worker.request('backtest', {
               instance,
               candles,
@@ -75,7 +78,7 @@ async function main() {
               slippage_bps: 2,
               fill_model: 'pessimistic_ohlc',
               start_time: startTime,
-              params: {},
+              params: runParams,
             }, 600_000);
             await worker.request('drop', { instance }).catch(() => {});
             const summary = result.summary || {};
@@ -139,11 +142,12 @@ function fmt(value, digits = 2) {
 
 function buildReport(results, symbols) {
   const lines = [];
-  lines.push(`# Harmonik Portfoy Matrix Backtest — ${stamp}`);
+  lines.push(`# Harmonik Portfoy Matrix Backtest V2 — ${stamp}`);
   lines.push('');
-  lines.push(`Strateji: \`${STRATEGY_FILE}\` (harmonic_portfolio_candidate.py, kilitli trade_filters ile pine_harmonic_patterns.py cekirdegini kullanir)`);
+  lines.push(`Strateji: \`${STRATEGY_FILE}\` (V2 - pine_harmonic_patterns.py cekirdegi degismedi, sadece test dosyasi ayrildi)`);
+  lines.push(`Motor: \`${WORKER_FILE}\` (V2 - equity-olcekli pozisyon boyutu + basit likidasyon + maliyetli drawdown)`);
   lines.push(`Sembol sayisi: ${symbols.length} (Binance USDT ciftleri, 24s hacme gore siralanmis)`);
-  lines.push(`Ayarlar: initial_capital=1000, fee_bps=10, slippage_bps=2, leverage=1, fill_model=pessimistic_ohlc, start_time ile periyot kesimi (zigzag warmup icin tam gecmis kullanilir)`);
+  lines.push(`Ayarlar: initial_capital=1000, fee_bps=10, slippage_bps=2, leverage=1, max_position_pct=100 (equity bileşik), fill_model=pessimistic_ohlc, start_time ile periyot kesimi (zigzag warmup icin tam gecmis kullanilir)`);
   lines.push('');
   lines.push('## Ozet Matris (tum semboller uzerinden ortalama)');
   lines.push('');
@@ -251,7 +255,7 @@ async function fetchTopUsdtSymbols(limit) {
 }
 
 function startWorker() {
-  const child = spawn('python', ['-u', 'python/workers/pool_worker.py'], {
+  const child = spawn('python', ['-u', WORKER_FILE], {
     cwd: ROOT,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },

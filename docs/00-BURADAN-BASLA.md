@@ -44,7 +44,8 @@ NexusTrade Baslat.exe
 | `public/` | Eski tek sayfa arayüz, kullanılmıyor | evet |
 | `python/strategies/` | 33 strateji dosyası; aktif kullanılan 4-5 tanesi | evet |
 | `python/workers/` | Strateji çalıştırıcı ve backtest motoru | evet |
-| `scripts/` | 64 script: araştırma taramaları, paper portföyler, başlatıcılar | evet |
+| `scripts/` | Paper portföyler, başlatıcılar, yedekleme ve Faz 1-2 araçları (17 dosya) | evet |
+| `scripts/archive/` | Kapanmış deneylerin 48 araştırma script'i; bakımı yapılmıyor | evet |
 | `data/` | `bots.json`, `trades.json`, paper portföy durumları, **555 araştırma raporu**, mum önbelleği (~600 MB) | **hayır**; yedek: `npm run backup:data` (`../nexustrade-backups`) |
 | `logs/` | `backend.log`, çökme raporları (`logs/reports/`) | hayır |
 | `tests/` | 39 test (vitest), hepsi geçiyor (2026-11-26) | evet |
@@ -109,6 +110,21 @@ dolmadan bırakılmamasını şart koşuyor.
 ## Son durum
 
 > Her oturum sonunda burayı güncelle. En yeni kayıt en üstte.
+
+### 2026-11-27
+
+- **Faz:** Faz 0, Toparlanma
+- **Bu oturumda yapılanlar:**
+  - `chore/faz0-toparlanma` dalı GitHub'a gönderildi ve PR #1 ile `main`'e birleştirildi
+    (https://github.com/Analysis-King/NexusTrade/pull/1). GitHub'daki `main` artık güncel.
+  - F0-6: kapanmış deneylerin 48 script'i `scripts/archive/` altına taşındı; hepsi repo kökünden
+    çalışmaya devam ediyor. Testler (39) ve tip kontrolü geçiyor.
+  - F0-6: başlatıcının `.exe`, `.dll` ve iki `.json` dosyası birlikte git'e eklendi (yeniden derleme
+    adımları yol haritasında).
+  - Bu iki iş PR #2'de (https://github.com/Analysis-King/NexusTrade/pull/2).
+- **Açık işler:** 2026-11-26'daki liste geçerli (backend yeniden başlatılmadı, yedekleme zamanlayıcısı,
+  `.env` anahtarları).
+- **Sıradaki adım:** PR #2'yi birleştirmek, ardından Faz 1.
 
 ### 2026-11-26
 

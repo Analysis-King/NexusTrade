@@ -1,34 +1,34 @@
 #!/usr/bin/env node
-// V2 arastirma scripti: harmonic_all_patterns_v2.py (tum pattern/yon/zigzag serbest) ile backtest
-// calistirip TUM islemleri (meta.pattern/direction dahil) toplar, ardindan pattern bazinda
-// win rate / profit factor / ort. islem getirisi kirilimi cikarir. Amac: hangi pattern alt-kumesinin
-// gercekten pozitif edge'e sahip oldugunu (yeterli ornek boyutuyla) bulmak. Uretim/canli akisla ilgisi yoktur.
+// V2: harmonic_yengec_short_v2.py (Yengec bearish tek pattern, robustness_search_v2'de train+test
+// ikisinde de PF>1 dogrulanan aday) icin nihai genis-orneklem dogrulama taramasi. V2 motoru
+// (pool_worker_v2.py - equity-olcekli sizing + likidasyon + maliyetli drawdown). Uretim/canli
+// akisla ilgisi yoktur.
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const DAY = 86_400_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const SYMBOL_COUNT = 30;
-const TIMEFRAMES = ['1h', '4h'];
+const TIMEFRAMES = ['1h', '4h', '1d'];
 const PERIODS = [
   { label: '1y', days: 365 },
   { label: '3m', days: 91 },
 ];
 const MAX_DAYS = Math.max(...PERIODS.map((p) => p.days));
-const STRATEGY_FILE = 'harmonic_all_patterns_v2.py';
+const STRATEGY_FILE = 'harmonic_yengec_short_v2.py';
 const WORKER_FILE = 'python/workers/pool_worker_v2.py';
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const OUT_JSON = path.resolve(ROOT, `data/harmonic_pattern_breakdown_v2_${stamp}.json`);
-const OUT_MD = path.resolve(ROOT, `data/harmonic_pattern_breakdown_v2_${stamp}.md`);
-const PROGRESS_PATH = path.resolve(ROOT, `data/harmonic_pattern_breakdown_v2_${stamp}.progress.json`);
+const OUT_JSON = path.resolve(ROOT, `data/harmonic_yengec_final_test_v2_${stamp}.json`);
+const OUT_MD = path.resolve(ROOT, `data/harmonic_yengec_final_test_v2_${stamp}.md`);
+const PROGRESS_PATH = path.resolve(ROOT, `data/harmonic_yengec_final_test_v2_${stamp}.progress.json`);
 
 main().catch((error) => {
-  console.error(`Pattern breakdown durdu: ${error.stack || error.message}`);
+  console.error(`Matrix scan durdu: ${error.stack || error.message}`);
   process.exitCode = 1;
 });
 
@@ -38,8 +38,7 @@ async function main() {
   console.log(`Secilen ${symbols.length} sembol: ${symbols.join(', ')}`);
 
   const worker = startWorker();
-  const allTrades = []; // her trade: {symbol, interval, period, pattern, direction, zigzagLength, pnlPct, won}
-  const runMeta = [];
+  const results = [];
   let done = 0;
   const totalRuns = symbols.length * TIMEFRAMES.length * PERIODS.length;
 
@@ -55,14 +54,18 @@ async function main() {
           continue;
         }
         if (candles.length < 60) {
+          console.error(`[SKIP] ${symbol} ${interval} yetersiz mum (${candles.length})`);
           done += PERIODS.length;
           continue;
         }
+        const firstT = candles[0].t;
+        const lastT = candles.at(-1).t;
+        const actualDays = Math.round((lastT - firstT) / DAY);
 
         for (const period of PERIODS) {
           done += 1;
           const startTime = Date.now() - period.days * DAY;
-          const instance = `pb_${symbol}_${interval}_${period.label}_${Math.random().toString(16).slice(2, 8)}`;
+          const instance = `mx_${symbol}_${interval}_${period.label}_${Math.random().toString(16).slice(2, 8)}`;
           try {
             const runParams = { max_position_pct: 100 };
             await worker.request('load', { instance, strategy_file: STRATEGY_FILE, params: runParams });
@@ -75,31 +78,37 @@ async function main() {
               fill_model: 'pessimistic_ohlc',
               start_time: startTime,
               params: runParams,
-            }, 300_000);
+            }, 600_000);
             await worker.request('drop', { instance }).catch(() => {});
-            const trades = result.trades || [];
-            for (const t of trades) {
-              const meta = t.meta || {};
-              allTrades.push({
-                symbol,
-                interval,
-                period: period.label,
-                pattern: meta.pattern || 'BILINMEYEN',
-                direction: meta.direction || (t.side === 'long' ? 'bullish' : 'bearish'),
-                zigzagLength: meta.zigzag_length ?? null,
-                side: t.side,
-                pnlPct: t.pnlPct,
-                netPnl: t.netPnl,
-                reason: t.reason,
-              });
-            }
-            runMeta.push({ symbol, interval, period: period.label, totalTrades: trades.length });
+            const summary = result.summary || {};
+            results.push({
+              symbol,
+              interval,
+              period: period.label,
+              nominalDays: period.days,
+              dataCoverageDays: actualDays,
+              candleCount: candles.length,
+              totalReturnPct: summary.totalReturnPct ?? null,
+              finalCapital: summary.finalCapital ?? null,
+              maxDrawdownPct: summary.maxDrawdownPct ?? null,
+              winRatePct: summary.winRatePct ?? null,
+              profitFactor: summary.profitFactor ?? null,
+              sharpe: summary.sharpe ?? null,
+              totalTrades: summary.totalTrades ?? null,
+              avgTradePct: summary.avgTradePct ?? null,
+              bestTradePct: summary.bestTradePct ?? null,
+              worstTradePct: summary.worstTradePct ?? null,
+            });
           } catch (error) {
             console.error(`[ERR] ${symbol} ${interval} ${period.label}: ${error.message}`);
+            results.push({
+              symbol, interval, period: period.label, nominalDays: period.days,
+              dataCoverageDays: actualDays, candleCount: candles.length, error: error.message,
+            });
           }
-          if (done % 10 === 0 || done === totalRuns) {
-            console.log(`[${new Date().toISOString()}] ${done}/${totalRuns} tamamlandi (son: ${symbol} ${interval} ${period.label}, toplanan islem: ${allTrades.length})`);
-            fs.writeFileSync(PROGRESS_PATH, JSON.stringify({ done, totalRuns, tradeCount: allTrades.length }, null, 2));
+          if (done % 20 === 0 || done === totalRuns) {
+            console.log(`[${new Date().toISOString()}] ${done}/${totalRuns} tamamlandi (son: ${symbol} ${interval} ${period.label})`);
+            fs.writeFileSync(PROGRESS_PATH, JSON.stringify({ done, totalRuns, results }, null, 2));
           }
         }
       }
@@ -108,10 +117,10 @@ async function main() {
     worker.child.kill();
   }
 
-  fs.writeFileSync(OUT_JSON, JSON.stringify({ runMeta, trades: allTrades }, null, 2));
-  fs.writeFileSync(OUT_MD, buildReport(allTrades, symbols));
+  fs.writeFileSync(OUT_JSON, JSON.stringify(results, null, 2));
+  fs.writeFileSync(OUT_MD, buildReport(results, symbols));
   try { fs.unlinkSync(PROGRESS_PATH); } catch (_) {}
-  console.log(`\nTamamlandi. Toplam islem: ${allTrades.length}\nJSON: ${OUT_JSON}\nMD: ${OUT_MD}`);
+  console.log(`\nTamamlandi. JSON: ${OUT_JSON}\nMD: ${OUT_MD}`);
 }
 
 function average(values) {
@@ -119,68 +128,53 @@ function average(values) {
   return nums.length ? nums.reduce((sum, v) => sum + v, 0) / nums.length : null;
 }
 
+function median(values) {
+  const nums = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  if (!nums.length) return null;
+  const mid = Math.floor(nums.length / 2);
+  return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+}
+
 function fmt(value, digits = 2) {
   return Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
 }
 
-function buildReport(trades, symbols) {
+function buildReport(results, symbols) {
   const lines = [];
-  lines.push(`# Harmonik Pattern Kirilimi (V2) — ${stamp}`);
+  lines.push(`# Harmonik Yengec Short - Nihai Dogrulama Matrisi (V2) — ${stamp}`);
   lines.push('');
-  lines.push(`Strateji: \`${STRATEGY_FILE}\` (tum pattern/yon/zigzag serbest), Motor: \`${WORKER_FILE}\``);
-  lines.push(`Sembol sayisi: ${symbols.length}, Zaman dilimleri: ${TIMEFRAMES.join(', ')}, Periyotlar: ${PERIODS.map((p) => p.label).join(', ')}`);
-  lines.push(`Ayarlar: initial_capital=1000, fee_bps=10, slippage_bps=2, leverage=1, max_position_pct=100, fill_model=pessimistic_ohlc`);
-  lines.push(`Toplam islem sayisi (tum pattern/sembol/periyotlar): ${trades.length}`);
+  lines.push(`Strateji: \`${STRATEGY_FILE}\` (Yengec bearish tek pattern, train/test dayaniklilik aramasindan cikan aday)`);
+  lines.push(`Motor: \`${WORKER_FILE}\` (V2 - equity-olcekli pozisyon boyutu + basit likidasyon + maliyetli drawdown)`);
+  lines.push(`Sembol sayisi: ${symbols.length} (Binance USDT ciftleri, 24s hacme gore siralanmis)`);
+  lines.push(`Ayarlar: initial_capital=1000, fee_bps=10, slippage_bps=2, leverage=1, max_position_pct=100 (equity bileşik), fill_model=pessimistic_ohlc, start_time ile periyot kesimi (zigzag warmup icin tam gecmis kullanilir)`);
   lines.push('');
-  lines.push('## Pattern + Yon Bazinda Kirilim (en az 5 islem sarti, Profit Factor\'a gore siralandi)');
+  lines.push('## Ozet Matris (tum semboller uzerinden ortalama)');
   lines.push('');
-  lines.push('| Pattern | Yon | Islem Sayisi | WinRate % | Ort. PnL % | Profit Factor | Toplam PnL % (basit toplam) |');
-  lines.push('|---|---|---|---|---|---|---|');
+  lines.push('| Zaman Dilimi | Periyot | Ort. Getiri % | Medyan Getiri % | Ort. WinRate % | Ort. Trade Sayisi | Ort. Max DD % | Karli Sembol % | Hata |');
+  lines.push('|---|---|---|---|---|---|---|---|---|');
 
-  const groups = new Map();
-  for (const t of trades) {
-    const key = `${t.pattern}|||${t.direction}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(t);
+  for (const interval of TIMEFRAMES) {
+    for (const period of PERIODS) {
+      const rows = results.filter((r) => r.interval === interval && r.period === period.label && !r.error);
+      const errCount = results.filter((r) => r.interval === interval && r.period === period.label && r.error).length;
+      const rets = rows.map((r) => r.totalReturnPct);
+      const profitable = rows.filter((r) => Number.isFinite(r.totalReturnPct) && r.totalReturnPct > 0).length;
+      lines.push(`| ${interval} | ${period.label} | ${fmt(average(rets))} | ${fmt(median(rets))} | ${fmt(average(rows.map((r) => r.winRatePct)))} | ${fmt(average(rows.map((r) => r.totalTrades)), 1)} | ${fmt(average(rows.map((r) => r.maxDrawdownPct)))} | ${rows.length ? fmt((profitable / rows.length) * 100, 0) : 'n/a'} | ${errCount || ''} |`);
+    }
   }
 
-  const rows = [];
-  for (const [key, list] of groups) {
-    const [pattern, direction] = key.split('|||');
-    const wins = list.filter((t) => Number.isFinite(t.netPnl) && t.netPnl > 0);
-    const losses = list.filter((t) => Number.isFinite(t.netPnl) && t.netPnl < 0);
-    const grossProfit = wins.reduce((s, t) => s + t.netPnl, 0);
-    const grossLoss = Math.abs(losses.reduce((s, t) => s + t.netPnl, 0));
-    const pf = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 99 : null);
-    rows.push({
-      pattern, direction,
-      count: list.length,
-      winRate: (wins.length / list.length) * 100,
-      avgPnl: average(list.map((t) => t.pnlPct)),
-      pf,
-      totalPnl: list.reduce((s, t) => s + (Number.isFinite(t.pnlPct) ? t.pnlPct : 0), 0),
-    });
+  lines.push('');
+  lines.push('## Ham Sonuclar (sembol bazinda)');
+  lines.push('');
+  lines.push('| Sembol | TF | Periyot | Getiri % | WinRate % | Trades | MaxDD % | PF | Kapsam(g) |');
+  lines.push('|---|---|---|---|---|---|---|---|---|');
+  for (const r of results) {
+    if (r.error) {
+      lines.push(`| ${r.symbol} | ${r.interval} | ${r.period} | HATA: ${r.error} | | | | | |`);
+      continue;
+    }
+    lines.push(`| ${r.symbol} | ${r.interval} | ${r.period} | ${fmt(r.totalReturnPct)} | ${fmt(r.winRatePct)} | ${r.totalTrades} | ${fmt(r.maxDrawdownPct)} | ${r.profitFactor ?? 'n/a'} | ${r.dataCoverageDays} |`);
   }
-
-  rows
-    .filter((r) => r.count >= 5)
-    .sort((a, b) => (b.pf ?? -1) - (a.pf ?? -1))
-    .forEach((r) => {
-      lines.push(`| ${r.pattern} | ${r.direction} | ${r.count} | ${fmt(r.winRate)} | ${fmt(r.avgPnl)} | ${r.pf == null ? 'n/a' : fmt(r.pf)} | ${fmt(r.totalPnl)} |`);
-    });
-
-  lines.push('');
-  lines.push('## Ornek boyutu az olanlar (< 5 islem, guvenilir degil - referans amacli)');
-  lines.push('');
-  lines.push('| Pattern | Yon | Islem Sayisi | WinRate % | Ort. PnL % |');
-  lines.push('|---|---|---|---|---|');
-  rows
-    .filter((r) => r.count < 5)
-    .sort((a, b) => b.count - a.count)
-    .forEach((r) => {
-      lines.push(`| ${r.pattern} | ${r.direction} | ${r.count} | ${fmt(r.winRate)} | ${fmt(r.avgPnl)} |`);
-    });
-
   return lines.join('\n');
 }
 
@@ -249,8 +243,8 @@ async function fetchTopUsdtSymbols(limit) {
   for (const ticker of ranked) {
     if (selected.length >= limit) break;
     try {
-      const probe = await fetchCandles(ticker.symbol, '1d', 400);
-      if (probe.length >= 380) selected.push(ticker.symbol);
+      const probe = await fetchCandles(ticker.symbol, '1d', 60);
+      if (probe.length >= 50) selected.push(ticker.symbol);
     } catch (_) {
       // atla
     }
@@ -294,8 +288,8 @@ function startWorker() {
       else waiter.reject(new Error(msg.error || 'worker error'));
     }
   });
-  function request(cmd, payload, timeout = 300_000) {
-    const id = `pb_${++seq}`;
+  function request(cmd, payload, timeout = 120_000) {
+    const id = `mx_${++seq}`;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
