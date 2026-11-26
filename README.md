@@ -3,6 +3,8 @@
 Binance trading platformu — bot motoru, indikatörler, harmonik formasyon analizi, paper/live mod.
 
 > **Durum**: Faz 1 (kişisel kullanım için sağlamlaştırma). Live modda kullanmak henüz önerilmez.
+>
+> **Uzun aradan sonra döndüysen:** önce [docs/00-BURADAN-BASLA.md](docs/00-BURADAN-BASLA.md).
 
 ---
 
@@ -22,8 +24,9 @@ pip install -r python/requirements.txt   # Hafta 2'de eklenecek
 
 # 2. Ortam değişkenleri
 cp .env.example .env
-# .env içindeki SESSION_SECRET ve ENCRYPTION_KEY değerlerini değiştirin:
+# .env içindeki boş SESSION_SECRET ve ENCRYPTION_KEY alanlarını doldurun (her biri ayrı üretilsin):
 #   openssl rand -hex 32
+#   ya da: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 # 3. Dev modda çalıştır
 npm run dev
@@ -51,6 +54,7 @@ curl http://localhost:3000/api/version
 | `npm run format` | Prettier ile formatla |
 | `npm run typecheck` | Sadece tip kontrolü, derleme yok |
 | `npm test` | Testleri çalıştır (Hafta 8) |
+| `npm run backup:data` | `data/` klasörünü `../nexustrade-backups` altına tarihli arşivle yedekler (`--dest=`, `--keep=`) |
 
 ---
 

@@ -32,6 +32,7 @@ export interface OpenPositionParams {
   notionalUsd: number;
   stopLossPrice?: number;
   takeProfitPrice?: number;
+  meta?: Record<string, unknown>;
 }
 
 export interface ExecutionResult {
@@ -48,10 +49,6 @@ export interface ExecutionProvider {
 /* ─── Paper execution ──────────────────────────────────── */
 
 export class PaperExecution implements ExecutionProvider {
-  /** Spot trading komisyonu — Binance default %0.1 */
-  private readonly feeRate = 0.001;
-  private readonly slippageRate = 0;
-
   async openPosition(
     ctx: ExecutionContext,
     params: OpenPositionParams
@@ -60,23 +57,35 @@ export class PaperExecution implements ExecutionProvider {
     if (price <= 0) throw new BotError('Geçersiz fiyat');
     if (params.notionalUsd <= 0) throw new BotError('Geçersiz notional');
 
-    const quantity = params.notionalUsd / price;
-    const fee = params.notionalUsd * this.feeRate;
+    const { feeRate, slippageRate, feeBps, slippageBps } = paperExecutionCosts(bot);
+    const fillPrice = applySlippage(price, params.side, slippageRate);
+    const quantity = params.notionalUsd / fillPrice;
+    const fee = params.notionalUsd * feeRate;
     if (
       params.takeProfitPrice !== undefined &&
       expectedTpNetPnl({
         side: params.side,
-        entryPrice: price,
+        entryPrice: fillPrice,
         targetPrice: params.takeProfitPrice,
         quantity,
         entryFee: fee,
-        feeRate: this.feeRate,
-        slippageRate: this.slippageRate,
+        feeRate,
+        slippageRate,
       }) <= 0
     ) {
       throw new BotError('TP hedefi komisyon/slippage maliyetini karsilamiyor');
     }
 
+    const meta = mergeMeta(params.meta, {
+      paperExecutionOpen: {
+        referencePrice: price,
+        fillPrice,
+        feeBps,
+        slippageBps,
+        feeUsd: fee,
+        estimatedSlippageUsd: Math.abs(fillPrice - price) * quantity,
+      },
+    });
     const trade: Trade = {
       id: randomUUID(),
       botId: bot.id,
@@ -84,10 +93,11 @@ export class PaperExecution implements ExecutionProvider {
       side: params.side,
       type: 'MARKET',
       quantity,
-      price,
+      price: fillPrice,
       feeUsd: fee,
       stopLossPrice: params.stopLossPrice,
       takeProfitPrice: params.takeProfitPrice,
+      meta,
       mode: 'paper',
       clientOrderId: `paper-${randomUUID()}`,
       createdAt: Date.now(),
@@ -98,14 +108,15 @@ export class PaperExecution implements ExecutionProvider {
       symbol: bot.symbol,
       side: params.side,
       quantity,
-      entryPrice: price,
+      entryPrice: fillPrice,
       stopLossPrice: params.stopLossPrice,
       takeProfitPrice: params.takeProfitPrice,
+      meta,
       openedAt: Date.now(),
     };
 
     log.info(
-      { botId: bot.id, side: params.side, price, quantity, fee },
+      { botId: bot.id, side: params.side, referencePrice: price, fillPrice, quantity, fee },
       'paper open'
     );
 
@@ -118,17 +129,30 @@ export class PaperExecution implements ExecutionProvider {
   ): Promise<ExecutionResult> {
     const { bot, price } = ctx;
     const closeSide: OrderSide = position.side === 'BUY' ? 'SELL' : 'BUY';
-    const notional = position.quantity * price;
-    const fee = notional * this.feeRate;
+    const { feeRate, slippageRate, feeBps, slippageBps } = paperExecutionCosts(bot);
+    const fillPrice = applySlippage(price, closeSide, slippageRate);
+    const notional = position.quantity * fillPrice;
+    const fee = notional * feeRate;
 
     // PnL hesabı (long pozisyon için):
     // pnl = (exit - entry) * qty - feeOpen - feeClose
     // Açılış komisyonunu yaklaşık olarak entry * qty * feeRate kabul ediyoruz
     const direction = position.side === 'BUY' ? 1 : -1;
-    const grossPnl = (price - position.entryPrice) * position.quantity * direction;
-    const feeOpen = position.entryPrice * position.quantity * this.feeRate;
+    const grossPnl = (fillPrice - position.entryPrice) * position.quantity * direction;
+    const feeOpen =
+      nestedFiniteNonNegative(position.meta, 'paperExecutionOpen', 'feeUsd') ??
+      position.entryPrice * position.quantity * feeRate;
     const pnlUsd = grossPnl - feeOpen - fee;
 
+    const meta = mergeMeta(position.meta, {
+      paperExecutionClose: {
+        referencePrice: price,
+        fillPrice,
+        feeBps,
+        slippageBps,
+        estimatedSlippageUsd: Math.abs(fillPrice - price) * position.quantity,
+      },
+    });
     const trade: Trade = {
       id: randomUUID(),
       botId: bot.id,
@@ -136,16 +160,17 @@ export class PaperExecution implements ExecutionProvider {
       side: closeSide,
       type: 'MARKET',
       quantity: position.quantity,
-      price,
+      price: fillPrice,
       feeUsd: fee,
       pnlUsd,
+      meta,
       mode: 'paper',
       clientOrderId: `paper-${randomUUID()}`,
       createdAt: Date.now(),
     };
 
     log.info(
-      { botId: bot.id, entryPrice: position.entryPrice, exitPrice: price, pnl: pnlUsd },
+      { botId: bot.id, entryPrice: position.entryPrice, referencePrice: price, exitPrice: fillPrice, pnl: pnlUsd },
       'paper close'
     );
 
@@ -173,6 +198,49 @@ export class LiveExecution implements ExecutionProvider {
 export function getExecutionProvider(mode: BotConfig['mode']): ExecutionProvider {
   if (mode === 'live') return new LiveExecution();
   return new PaperExecution();
+}
+
+function paperExecutionCosts(bot: BotConfig): {
+  feeRate: number;
+  slippageRate: number;
+  feeBps: number;
+  slippageBps: number;
+} {
+  const feeBps = finiteNonNegative(bot.strategyParams.fee_bps, 10);
+  const slippageBps = finiteNonNegative(bot.strategyParams.slippage_bps, 2);
+  return {
+    feeRate: feeBps / 10_000,
+    slippageRate: slippageBps / 10_000,
+    feeBps,
+    slippageBps,
+  };
+}
+
+function applySlippage(referencePrice: number, side: OrderSide, rate: number): number {
+  return referencePrice * (side === 'BUY' ? 1 + rate : 1 - rate);
+}
+
+function finiteNonNegative(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function nestedFiniteNonNegative(
+  source: Record<string, unknown> | undefined,
+  parentKey: string,
+  valueKey: string
+): number | undefined {
+  const parent = source?.[parentKey];
+  if (!parent || typeof parent !== 'object' || Array.isArray(parent)) return undefined;
+  const parsed = Number((parent as Record<string, unknown>)[valueKey]);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function mergeMeta(
+  base: Record<string, unknown> | undefined,
+  patch: Record<string, unknown>
+): Record<string, unknown> {
+  return { ...(base ?? {}), ...patch };
 }
 
 function expectedTpNetPnl(input: {

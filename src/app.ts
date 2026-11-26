@@ -6,7 +6,7 @@
  */
 
 import cors from 'cors';
-import express, { type Express } from 'express';
+import express, { type Express, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 
@@ -18,6 +18,7 @@ import { healthRouter } from './routes/health.js';
 import { indicatorRouter } from './routes/indicators.js';
 import { marketRouter } from './routes/market.js';
 import { errorHandler, notFoundHandler, requestLogger } from './routes/middleware.js';
+import { paperPortfolioRouter } from './routes/paperPortfolios.js';
 import { strategyRouter } from './routes/strategies.js';
 
 export function createApp(): Express {
@@ -54,16 +55,19 @@ export function createApp(): Express {
   // Request logging
   app.use(requestLogger);
 
-  // Genel rate limit — endpoint-spesifik limitler ileride eklenecek
-  app.use(
-    rateLimit({
-      windowMs: env.RATE_LIMIT_WINDOW_MS,
-      max: env.RATE_LIMIT_MAX,
-      standardHeaders: true,
-      legacyHeaders: false,
-      message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Çok fazla istek' } },
-    })
-  );
+  // Rate limit — okuma ve islem istekleri ayri butcelerden sayilir. Tek ortak
+  // butcede arayuzun arka plan yoklamalari limiti doldurunca kullanicinin
+  // durdur/duraklat/sil tiklamalari da 429 ile reddediliyordu.
+  const isReadRequest = (req: Request): boolean =>
+    req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+  const limiterBase = {
+    windowMs: env.RATE_LIMIT_WINDOW_MS,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { ok: false, error: { code: 'RATE_LIMITED', message: 'Çok fazla istek' } },
+  } as const;
+  app.use(rateLimit({ ...limiterBase, max: env.RATE_LIMIT_MAX, skip: (req) => !isReadRequest(req) }));
+  app.use(rateLimit({ ...limiterBase, max: env.RATE_LIMIT_WRITE_MAX, skip: isReadRequest }));
 
   // Statik frontend — şimdilik mevcut public/ kullanılıyor
   app.use(express.static('public'));
@@ -73,6 +77,7 @@ export function createApp(): Express {
   app.use('/api/market', marketRouter);
   app.use('/api/indicators', indicatorRouter);
   app.use('/api/bots', botRouter);
+  app.use('/api/paper-portfolios', paperPortfolioRouter);
   app.use('/api/strategies', strategyRouter);
   app.use('/api/backtests', backtestRouter);
 

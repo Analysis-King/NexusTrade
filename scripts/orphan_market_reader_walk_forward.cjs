@@ -9,6 +9,7 @@ const args = parseArgs(process.argv.slice(2));
 const outputName = String(args.out || 'orphan_market_reader_walk_forward').replace(/[^a-zA-Z0-9_-]/g, '_');
 const OUT_JSON = path.join(ROOT, 'data', `${outputName}.json`);
 const OUT_MD = path.join(ROOT, 'data', `${outputName}.md`);
+const strategyFile = path.basename(String(args.strategyFile || 'orphan_market_reader.py'));
 
 const DEFAULT_PROFILES = [
   'ZECUSDT:30m',
@@ -42,10 +43,11 @@ const profiles = String(args.profiles || DEFAULT_PROFILES.join(','))
   .map(parseProfile);
 
 const lookbackDays = Number(args.lookbackDays || 360);
+const warmupDays = Math.max(0, Number(args.warmupDays || 0));
 const concurrency = Math.max(1, Number(args.concurrency || 4));
 const fixedWindowDays = args.windowDays ? Number(args.windowDays) : null;
 const fixedStepDays = args.stepDays ? Number(args.stepDays) : null;
-const endAnchorMs = args.endTime ? Number(args.endTime) : Date.now();
+let endAnchorMs = args.endTime ? Number(args.endTime) : Date.now();
 
 const strategyParams = {
   max_position_pct: Number(args.positionPct || 100),
@@ -55,6 +57,16 @@ const strategyParams = {
   stop_loss_mode: 'strategy',
   exit_on_opposite_signal: args.exitOnOpposite == null ? true : String(args.exitOnOpposite).toLowerCase() !== 'false',
 };
+if (args.paramsJson || args.paramsFile) {
+  const rawParams = args.paramsFile
+    ? fs.readFileSync(path.resolve(String(args.paramsFile)), 'utf8')
+    : String(args.paramsJson);
+  const extraParams = JSON.parse(rawParams);
+  if (!extraParams || typeof extraParams !== 'object' || Array.isArray(extraParams)) {
+    throw new Error('--paramsJson/--paramsFile must contain a JSON object');
+  }
+  Object.assign(strategyParams, extraParams);
+}
 
 for (const [argKey, paramKey] of [
   ['minScore', 'min_score'],
@@ -236,12 +248,17 @@ function startWorker(slot) {
 }
 
 async function runBacktest(worker, task) {
-  const candles = await fetchCandlesWindow(task.symbol, task.interval, task.startMs, task.endMs);
+  const candles = await fetchCandlesWindow(
+    task.symbol,
+    task.interval,
+    task.startMs - warmupDays * DAY,
+    task.endMs
+  );
   if (candles.length < 120) throw new Error(`not enough candles: ${candles.length}`);
-  const instance = `orphan_wf_${task.symbol}_${task.interval}_${randomUUID().replace(/-/g, '')}`;
+  const instance = `strategy_wf_${task.symbol}_${task.interval}_${randomUUID().replace(/-/g, '')}`;
   await worker.request('load', {
     instance,
-    strategy_file: 'orphan_market_reader.py',
+    strategy_file: strategyFile,
     params: strategyParams,
   });
   try {
@@ -252,6 +269,7 @@ async function runBacktest(worker, task) {
       fee_bps: strategyParams.fee_bps,
       slippage_bps: strategyParams.slippage_bps,
       fill_model: 'pessimistic_ohlc',
+      start_time: task.startMs,
       params: strategyParams,
     });
     return {
@@ -318,6 +336,7 @@ function buildTasks() {
 function aggregate(results) {
   const profileRows = [];
   const profileMap = new Map();
+  const validResults = results.filter((row) => !row.error && row.summary);
   for (const result of results) {
     if (result.error || !result.summary) continue;
     const key = `${result.symbol}:${result.interval}`;
@@ -351,7 +370,41 @@ function aggregate(results) {
     (b.avgDailyPct * Math.min(b.positivePct, 100)) - (a.avgDailyPct * Math.min(a.positivePct, 100))
   );
 
+  const validDaily = validResults
+    .map((row) => dailyCompoundPct(Number(row.summary.totalReturnPct), Number(row.windowDays)))
+    .filter(Number.isFinite);
+  const windowIndexes = [...new Set(validResults.map((row) => Number(row.windowIndex)))].sort((a, b) => a - b);
+  const equalWeightWindows = windowIndexes.map((windowIndex) => {
+    const rows = validResults.filter((row) => Number(row.windowIndex) === windowIndex);
+    const daily = rows
+      .map((row) => dailyCompoundPct(Number(row.summary.totalReturnPct), Number(row.windowDays)))
+      .filter(Number.isFinite);
+    return {
+      windowIndex,
+      profiles: rows.length,
+      validDailyProfiles: daily.length,
+      avgDailyPct: round(mean(daily), 4),
+      medianDailyPct: round(median(daily), 4),
+      positiveProfiles: daily.filter((value) => value > 0).length,
+      targetProfiles: daily.filter((value) => value >= 0.8).length,
+    };
+  });
+
   return {
+    universal: {
+      cases: validResults.length,
+      validDailyCases: validDaily.length,
+      positiveCases: validDaily.filter((value) => value > 0).length,
+      positivePct: round(validDaily.length ? validDaily.filter((value) => value > 0).length * 100 / validDaily.length : 0, 2),
+      targetDailyPct: 0.8,
+      targetCases: validDaily.filter((value) => value >= 0.8).length,
+      targetPct: round(validDaily.length ? validDaily.filter((value) => value >= 0.8).length * 100 / validDaily.length : 0, 2),
+      blownCases: validResults.filter((row) => Number(row.summary.totalReturnPct) <= -100).length,
+      avgDailyPct: round(mean(validDaily), 4),
+      medianDailyPct: round(median(validDaily), 4),
+      avgMaxDrawdownPct: round(mean(validResults.map((row) => Number(row.summary.maxDrawdownPct))), 2),
+      equalWeightWindows,
+    },
     profiles: profileRows,
     windows: results
       .filter((row) => !row.error && row.summary)
@@ -363,12 +416,27 @@ function aggregate(results) {
 
 function markdown(report) {
   const lines = [];
-  lines.push('# Orphan Market Reader Walk-Forward');
+  lines.push('# Strategy Walk-Forward');
   lines.push('');
   lines.push(`Generated: ${report.generatedAt}`);
   lines.push(`Profiles: ${report.profiles.map((profile) => `${profile.symbol}:${profile.interval}`).join(', ')}`);
+  lines.push(`Strategy: ${report.strategyFile}`);
   lines.push(`Lookback Days: ${report.lookbackDays}`);
+  lines.push(`Warmup Days: ${report.warmupDays}`);
   lines.push(`Params: ${JSON.stringify(report.params)}`);
+  lines.push('');
+  lines.push('## Universal Portfolio Summary');
+  lines.push('');
+  lines.push('| Cases | Positive | >=0.8%/day | Blown | Avg Daily % | Median Daily % | Avg DD % |');
+  lines.push('|---:|---:|---:|---:|---:|---:|---:|');
+  const universal = report.aggregate.universal;
+  lines.push(`| ${universal.cases} | ${universal.positiveCases}/${universal.validDailyCases} (${universal.positivePct}%) | ${universal.targetCases}/${universal.validDailyCases} (${universal.targetPct}%) | ${universal.blownCases} | ${universal.avgDailyPct} | ${universal.medianDailyPct} | ${universal.avgMaxDrawdownPct} |`);
+  lines.push('');
+  lines.push('| Window | Profiles | Avg Daily % | Median Daily % | Positive | >=0.8%/day |');
+  lines.push('|---:|---:|---:|---:|---:|---:|');
+  for (const row of universal.equalWeightWindows) {
+    lines.push(`| ${row.windowIndex} | ${row.profiles} | ${row.avgDailyPct} | ${row.medianDailyPct} | ${row.positiveProfiles} | ${row.targetProfiles} |`);
+  }
   lines.push('');
   lines.push('## Profile Summary');
   lines.push('');
@@ -400,8 +468,10 @@ function markdown(report) {
 function buildReport(results) {
   return {
     generatedAt: new Date().toISOString(),
+    strategyFile,
     profiles,
     lookbackDays,
+    warmupDays,
     endAnchorMs,
     params: strategyParams,
     results: [...results].sort((a, b) =>
@@ -449,21 +519,29 @@ async function workerLoop(slot, tasks, results, progress) {
 }
 
 async function main() {
-  const tasks = buildTasks();
   const results = [];
+  let previousReport = null;
   if (args.resume && fs.existsSync(OUT_JSON)) {
     try {
-      const previous = JSON.parse(fs.readFileSync(OUT_JSON, 'utf8'));
-      for (const result of previous.results || []) {
-        if (result && result.symbol && result.interval && result.startMs && result.endMs) results.push(result);
+      previousReport = JSON.parse(fs.readFileSync(OUT_JSON, 'utf8'));
+      if (!args.endTime && Number.isFinite(Number(previousReport.endAnchorMs))) {
+        endAnchorMs = Number(previousReport.endAnchorMs);
       }
+      const unique = new Map();
+      for (const result of previousReport.results || []) {
+        if (result && result.symbol && result.interval && Number.isFinite(Number(result.windowIndex))) {
+          unique.set(`${result.symbol}|${result.interval}|${result.windowIndex}`, result);
+        }
+      }
+      results.push(...unique.values());
     } catch (err) {
       console.log(`Resume read skipped: ${err.message}`);
     }
   }
 
-  const completed = new Set(results.map((row) => `${row.symbol}|${row.interval}|${row.startMs}|${row.endMs}`));
-  const remainingTasks = tasks.filter((task) => !completed.has(`${task.symbol}|${task.interval}|${task.startMs}|${task.endMs}`));
+  const tasks = buildTasks();
+  const completed = new Set(results.map((row) => `${row.symbol}|${row.interval}|${row.windowIndex}`));
+  const remainingTasks = tasks.filter((task) => !completed.has(`${task.symbol}|${task.interval}|${task.windowIndex}`));
   const progress = { done: 0, total: remainingTasks.length };
   save(buildReport(results));
   console.log(`Walk-forward starting: profiles=${profiles.length}, tasks=${tasks.length}, remaining=${remainingTasks.length}, concurrency=${concurrency}`);

@@ -40,7 +40,7 @@ const DEFAULT_RISK: BotRiskConfig = {
   maxPositionUsd: 100,
   dailyMaxLossUsd: 50,
   stopLossMode: 'target_ratio',
-  stopLossTargetRatio: 1,
+  stopLossTargetRatio: 0.2,
   leverage: 1,
 };
 
@@ -163,8 +163,11 @@ export class BotManager extends EventEmitter {
     }
     const updated = await this.storage.bots.update(id, storagePatch);
 
-    // Runner'ın config'ini de yenile
+    // Runner'in config'ini de yenile. Eski runner (orn. duraklatilmis) hala
+    // stream'e abone ve yoklama zamanlayicisi acik olabilir — once kapat,
+    // yoksa arkada "zombi" runner kalir.
     if (runner) {
+      await runner.dispose();
       this.runners.set(id, this.makeRunner(updated));
     }
     this.emit('updated', updated);
@@ -266,7 +269,7 @@ export class BotManager extends EventEmitter {
     let total = 0;
     let today = 0;
     let position: Position | null = null;
-    const lastSignal = trades[0] ? signalFromTrade(trades[0]) : null;
+    const lastSignal = lastOpeningSignalFromTrades(trades);
 
     for (const trade of trades) {
       const pnl = typeof trade.pnlUsd === 'number' ? trade.pnlUsd : 0;
@@ -312,6 +315,11 @@ function isClosingTrade(trade: Trade): boolean {
   return typeof trade.pnlUsd === 'number';
 }
 
+function lastOpeningSignalFromTrades(trades: Trade[]): Signal | null {
+  const trade = trades.find((item) => !isClosingTrade(item));
+  return trade ? signalFromTrade(trade) : null;
+}
+
 function signalFromTrade(trade: Trade): Signal {
   return trade.side === 'BUY' ? 'buy' : 'sell';
 }
@@ -334,6 +342,7 @@ function positionFromOpenTrade(cfg: BotConfig, trade: Trade): Position {
         trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, cfg.risk.takeProfitPct)
       ),
     takeProfitPrice: trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, cfg.risk.takeProfitPct),
+    meta: trade.meta,
     openedAt: trade.createdAt,
   };
 }
@@ -348,7 +357,7 @@ function resolveStopLossPrice(
 ): number | undefined {
   const mode = risk.stopLossMode ?? 'target_ratio';
   if (mode === 'target_ratio' && takeProfitPrice !== undefined) {
-    const ratio = normalizePositive(risk.stopLossTargetRatio, 1);
+    const ratio = normalizePositive(risk.stopLossTargetRatio, 0.2);
     const distance = Math.abs(takeProfitPrice - entry);
     if (distance > 0) return side === 'BUY' ? entry - distance * ratio : entry + distance * ratio;
   }

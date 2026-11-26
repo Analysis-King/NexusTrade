@@ -8,6 +8,7 @@ import math
 
 
 LAST_SIGNAL_BAR = None
+POSITION_OPEN_BAR = None
 SERIES_CACHE = {
     "signature": None,
     "count": 0,
@@ -46,6 +47,8 @@ def initialize():
         "short_stoch_max": 80.0,
         "short_min_bb_width": 5.0,
         "short_max_bb_width": 10.0,
+        "require_long_macd_recovery": True,
+        "require_short_macd_fade": True,
         "min_stop_pct": 0.35,
         "max_stop_pct": 1.4,
         "stop_atr_mult": 1.0,
@@ -59,6 +62,14 @@ def initialize():
         "regime_allow_mixed": True,
         "long_regime": "bull_or_mixed",
         "short_regime": "bear_or_mixed",
+        "htf_filter": False,
+        "htf_hours": 4,
+        "htf_fast_period": 21,
+        "htf_slow_period": 55,
+        "htf_slope_bars": 6,
+        "long_htf_regime": "any",
+        "short_htf_regime": "any",
+        "max_htf_source_candles": 1600,
     }
 
 
@@ -107,6 +118,8 @@ def _config(config):
     cfg["short_stoch_max"] = _to_float(cfg.get("short_stoch_max"), 80.0)
     cfg["short_min_bb_width"] = max(0.0, _to_float(cfg.get("short_min_bb_width"), 5.0))
     cfg["short_max_bb_width"] = max(cfg["short_min_bb_width"], _to_float(cfg.get("short_max_bb_width"), 10.0))
+    cfg["require_long_macd_recovery"] = _to_bool(cfg.get("require_long_macd_recovery"), True)
+    cfg["require_short_macd_fade"] = _to_bool(cfg.get("require_short_macd_fade"), True)
     cfg["min_stop_pct"] = max(0.02, _to_float(cfg.get("min_stop_pct"), 0.35))
     cfg["max_stop_pct"] = max(cfg["min_stop_pct"], _to_float(cfg.get("max_stop_pct"), 1.4))
     cfg["stop_atr_mult"] = max(0.1, _to_float(cfg.get("stop_atr_mult"), 1.0))
@@ -120,6 +133,14 @@ def _config(config):
     cfg["regime_allow_mixed"] = _to_bool(cfg.get("regime_allow_mixed"), True)
     cfg["long_regime"] = str(cfg.get("long_regime") or "bull_or_mixed").strip().lower()
     cfg["short_regime"] = str(cfg.get("short_regime") or "bear_or_mixed").strip().lower()
+    cfg["htf_filter"] = _to_bool(cfg.get("htf_filter"), False)
+    cfg["htf_hours"] = max(1, _to_int(cfg.get("htf_hours"), 4))
+    cfg["htf_fast_period"] = max(2, _to_int(cfg.get("htf_fast_period"), 21))
+    cfg["htf_slow_period"] = max(cfg["htf_fast_period"] + 1, _to_int(cfg.get("htf_slow_period"), 55))
+    cfg["htf_slope_bars"] = max(1, _to_int(cfg.get("htf_slope_bars"), 6))
+    cfg["long_htf_regime"] = str(cfg.get("long_htf_regime") or "any").strip().lower()
+    cfg["short_htf_regime"] = str(cfg.get("short_htf_regime") or "any").strip().lower()
+    cfg["max_htf_source_candles"] = max(300, _to_int(cfg.get("max_htf_source_candles"), 1600))
     return cfg
 
 
@@ -376,6 +397,56 @@ def _regime_allows(side, regime, cfg):
     return True
 
 
+def _higher_regime(candles, cfg):
+    if not cfg["htf_filter"]:
+        return "any"
+    source = candles[-cfg["max_htf_source_candles"]:]
+    bucket_ms = cfg["htf_hours"] * 60 * 60 * 1000
+    groups = []
+    for candle in source:
+        timestamp = _to_int(candle.get("t"), 0)
+        bucket = timestamp // bucket_ms
+        if not groups or groups[-1]["bucket"] != bucket:
+            groups.append({"bucket": bucket, "c": float(candle["c"])})
+        else:
+            groups[-1]["c"] = float(candle["c"])
+
+    # The active higher-timeframe candle is intentionally excluded.
+    completed = groups[:-1]
+    minimum = cfg["htf_slow_period"] + cfg["htf_slope_bars"] + 2
+    if len(completed) < minimum:
+        return "unknown"
+    closes = [row["c"] for row in completed]
+    fast = _ema(closes, cfg["htf_fast_period"])
+    slow = _ema(closes, cfg["htf_slow_period"])
+    index = len(closes) - 1
+    slope_base = slow[max(0, index - cfg["htf_slope_bars"])]
+    slope_pct = (slow[index] / slope_base - 1.0) * 100.0 if slope_base else 0.0
+    close_price = closes[index]
+    if close_price > fast[index] > slow[index] and slope_pct > 0:
+        return "strong_bull"
+    if close_price > slow[index] and slope_pct >= 0:
+        return "bull"
+    if close_price < fast[index] < slow[index] and slope_pct < 0:
+        return "strong_bear"
+    if close_price < slow[index] and slope_pct <= 0:
+        return "bear"
+    return "mixed"
+
+
+def _htf_allows(side, regime, cfg):
+    if not cfg["htf_filter"]:
+        return True
+    rule = cfg["long_htf_regime"] if side == "BUY" else cfg["short_htf_regime"]
+    if rule in ("any", "all", "off"):
+        return True
+    if rule == "bear_or_strong_bear":
+        return regime in ("bear", "strong_bear")
+    if rule == "bull_or_strong_bull":
+        return regime in ("bull", "strong_bull")
+    return regime == rule
+
+
 def _risk(side, entry, atr_value, cfg):
     atr_pct = atr_value / entry * 100.0 if entry else cfg["min_stop_pct"]
     stop_pct = max(cfg["min_stop_pct"], min(cfg["max_stop_pct"], atr_pct * cfg["stop_atr_mult"]))
@@ -387,11 +458,12 @@ def _risk(side, entry, atr_value, cfg):
 
 
 def _ready(candles, cfg):
-    return len(candles) >= max(cfg["bb_period"], cfg["atr_period"], cfg["rsi_period"], cfg["stoch_period"], 35) + 2
+    htf_minimum = 240 if cfg["htf_filter"] else 35
+    return len(candles) >= max(cfg["bb_period"], cfg["atr_period"], cfg["rsi_period"], cfg["stoch_period"], htf_minimum) + 2
 
 
 def on_candle(candle, portfolio, config):
-    global LAST_SIGNAL_BAR
+    global LAST_SIGNAL_BAR, POSITION_OPEN_BAR
 
     cfg = _config(config)
     candles = _candles()
@@ -409,7 +481,11 @@ def on_candle(candle, portfolio, config):
     bb_width = data["bb_width"][-1]
     atr_value = data["atr"][-1]
     regime = _regime(close_price, data)
+    htf_regime = _higher_regime(candles, cfg)
     current_side = getattr(portfolio, "side", None)
+
+    if not getattr(portfolio, "has_position", False):
+        POSITION_OPEN_BAR = None
 
     bars_since_signal = idx - LAST_SIGNAL_BAR if LAST_SIGNAL_BAR is not None else None
     if bars_since_signal is not None and bars_since_signal < cfg["cooldown_bars"]:
@@ -417,11 +493,19 @@ def on_candle(candle, portfolio, config):
         return
 
     if getattr(portfolio, "has_position", False):
+        if POSITION_OPEN_BAR is None:
+            POSITION_OPEN_BAR = idx
+        if idx - POSITION_OPEN_BAR >= cfg["max_hold_bars"]:
+            POSITION_OPEN_BAR = None
+            close()
+            return
         if cfg["exit_on_momentum_loss"]:
             if current_side == "BUY" and rsi >= 50 and macd < prev_macd:
+                POSITION_OPEN_BAR = None
                 close()
                 return
             if current_side == "SELL" and rsi <= 50 and macd > prev_macd:
+                POSITION_OPEN_BAR = None
                 close()
                 return
         hold()
@@ -431,18 +515,19 @@ def on_candle(candle, portfolio, config):
         cfg["allow_long"] and
         rsi < cfg["long_rsi_max"] and
         cfg["long_stoch_min"] <= stoch < cfg["long_stoch_max"] and
-        macd < 0 and
-        macd > prev_macd and
+        (not cfg["require_long_macd_recovery"] or (macd < 0 and macd > prev_macd)) and
         bb_width >= cfg["long_min_bb_width"] and
-        _regime_allows("BUY", regime, cfg)
+        _regime_allows("BUY", regime, cfg) and
+        _htf_allows("BUY", htf_regime, cfg)
     )
     if long_signal:
         sl, tp, stop_pct = _risk("BUY", close_price, atr_value, cfg)
         set_sl(price=sl)
         set_tp(price=tp)
         LAST_SIGNAL_BAR = idx
-        _set_meta(last_signal="BUY", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime)
-        _observe("mined_reversal.long", side="long", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), stop_pct=round(stop_pct, 3))
+        POSITION_OPEN_BAR = idx
+        _set_meta(last_signal="BUY", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime, htf_regime=htf_regime)
+        _observe("mined_reversal.long", side="long", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), stop_pct=round(stop_pct, 3), htf_regime=htf_regime)
         buy()
         return
 
@@ -450,22 +535,23 @@ def on_candle(candle, portfolio, config):
         cfg["allow_short"] and
         cfg["short_rsi_min"] <= rsi < cfg["short_rsi_max"] and
         cfg["short_stoch_min"] <= stoch < cfg["short_stoch_max"] and
-        macd > 0 and
-        macd < prev_macd and
+        (not cfg["require_short_macd_fade"] or (macd > 0 and macd < prev_macd)) and
         cfg["short_min_bb_width"] <= bb_width < cfg["short_max_bb_width"] and
-        _regime_allows("SELL", regime, cfg)
+        _regime_allows("SELL", regime, cfg) and
+        _htf_allows("SELL", htf_regime, cfg)
     )
     if short_signal:
         sl, tp, stop_pct = _risk("SELL", close_price, atr_value, cfg)
         set_sl(price=sl)
         set_tp(price=tp)
         LAST_SIGNAL_BAR = idx
-        _set_meta(last_signal="SELL", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime)
-        _observe("mined_reversal.short", side="short", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), stop_pct=round(stop_pct, 3))
+        POSITION_OPEN_BAR = idx
+        _set_meta(last_signal="SELL", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime, htf_regime=htf_regime)
+        _observe("mined_reversal.short", side="short", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), stop_pct=round(stop_pct, 3), htf_regime=htf_regime)
         sell()
         return
 
-    _set_meta(last_signal="HOLD", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime)
+    _set_meta(last_signal="HOLD", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime, htf_regime=htf_regime)
     hold()
 
 
@@ -483,8 +569,11 @@ def draw(candles, indicators, patterns, config=None):
         macd = data["macd"][i]
         prev_macd = data["macd"][i - 1]
         bb_width = data["bb_width"][i]
-        if rsi < cfg["long_rsi_max"] and cfg["long_stoch_min"] <= stoch < cfg["long_stoch_max"] and macd < 0 and macd > prev_macd and bb_width >= cfg["long_min_bb_width"]:
+        htf_regime = _higher_regime(candles[:i + 1], cfg)
+        long_macd_ok = not cfg["require_long_macd_recovery"] or (macd < 0 and macd > prev_macd)
+        short_macd_ok = not cfg["require_short_macd_fade"] or (macd > 0 and macd < prev_macd)
+        if cfg["allow_long"] and rsi < cfg["long_rsi_max"] and cfg["long_stoch_min"] <= stoch < cfg["long_stoch_max"] and long_macd_ok and bb_width >= cfg["long_min_bb_width"] and _htf_allows("BUY", htf_regime, cfg):
             signals.append({"t": candle["t"], "price": candle["l"], "side": "buy", "label": "Mined"})
-        elif cfg["allow_short"] and cfg["short_rsi_min"] <= rsi < cfg["short_rsi_max"] and cfg["short_stoch_min"] <= stoch < cfg["short_stoch_max"] and macd > 0 and macd < prev_macd and cfg["short_min_bb_width"] <= bb_width < cfg["short_max_bb_width"]:
+        elif cfg["allow_short"] and cfg["short_rsi_min"] <= rsi < cfg["short_rsi_max"] and cfg["short_stoch_min"] <= stoch < cfg["short_stoch_max"] and short_macd_ok and cfg["short_min_bb_width"] <= bb_width < cfg["short_max_bb_width"] and _htf_allows("SELL", htf_regime, cfg):
             signals.append({"t": candle["t"], "price": candle["h"], "side": "sell", "label": "Mined"})
     return [{"type": "signals", "signals": signals[-80:]}]

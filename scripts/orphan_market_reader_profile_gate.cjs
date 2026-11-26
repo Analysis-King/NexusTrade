@@ -56,6 +56,11 @@ function profileKey(row) {
   return `${row.symbol}:${row.interval}`;
 }
 
+function strategyId(walkForward) {
+  const file = String(walkForward.strategyFile || "orphan_market_reader.py");
+  return path.basename(file, path.extname(file));
+}
+
 function dailyPct(row) {
   if (!row || !row.summary || !Number.isFinite(row.summary.totalReturnPct) || !Number.isFinite(row.windowDays)) {
     return null;
@@ -190,10 +195,11 @@ function simulateGate(byProfile, candidates, args) {
 
 function toMarkdown(report, args) {
   const lines = [];
-  lines.push("# Orphan Market Reader Profile Gate");
+  lines.push("# Strategy Profile Gate");
   lines.push("");
   lines.push(`Generated: ${report.generatedAt}`);
   lines.push(`Source: ${report.source}`);
+  lines.push(`Strategy: ${report.strategy}`);
   lines.push(`Rule: top ${args.maxProfiles} profiles by walk-forward average daily %, latest daily >= ${args.minLatestDailyPct}%, previous daily >= ${args.minPrevDailyPct}%, positive windows >= ${args.minPositivePct}%`);
   lines.push("");
   lines.push("## Active Profiles");
@@ -241,10 +247,13 @@ function main() {
   const candidates = selectCandidateProfiles(walkForward, args, byProfile);
   const activeProfiles = selectActiveProfiles(candidates, args);
   const gateSimulation = simulateGate(byProfile, candidates, args);
+  const strategy = strategyId(walkForward);
 
   const report = {
     generatedAt: new Date().toISOString(),
     source: path.relative(process.cwd(), inputPath),
+    strategy,
+    strategyFile: walkForward.strategyFile || `${strategy}.py`,
     rule: {
       maxProfiles: args.maxProfiles,
       minPositivePct: args.minPositivePct,
@@ -280,7 +289,7 @@ function main() {
     })),
     gateSimulation,
     botConfigDraft: activeProfiles.map((row) => ({
-      strategy: "orphan_market_reader",
+      strategy,
       symbol: row.symbol,
       interval: row.interval,
       mode: "paper",

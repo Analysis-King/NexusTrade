@@ -20,7 +20,7 @@ import {
   useBot, useBotTrades, useStartBot, useStopBot,
   usePauseBot, useResumeBot, useDeleteBot,
 } from '@/hooks/useBots';
-import { formatPrice, formatTimeShort } from '@/lib/format';
+import { formatPrice, formatSignedUsd, formatTimeShort } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { useAppStore } from '@/store/app';
 import type { BotStatus, Trade, Position } from '@/types/api';
@@ -182,8 +182,15 @@ export function BotDetail({
           )}
 
           {cfg.lastError && (
-            <div className="rounded bg-bear/10 border border-bear/30 px-2 py-1.5 text-xs text-bear">
-              Hata: {cfg.lastError}
+            <div
+              className={cn(
+                'rounded border px-2 py-1.5 text-xs',
+                cfg.status === 'error'
+                  ? 'bg-bear/10 border-bear/30 text-bear'
+                  : 'bg-accent/10 border-accent/30 text-accent'
+              )}
+            >
+              {cfg.status === 'error' ? 'Hata' : 'Son uyari'}: {cfg.lastError}
             </div>
           )}
         </div>
@@ -313,7 +320,7 @@ function Stat({
 }): JSX.Element {
   const formatted =
     kind === 'pnl'
-      ? `${value >= 0 ? '+' : ''}$${formatPrice(Math.abs(value))}`
+      ? formatSignedUsd(value)
       : kind === 'usd'
         ? `$${formatPrice(value)}`
         : kind === 'pct'
@@ -349,15 +356,29 @@ function Stat({
 
 function TradeRow({ trade }: { trade: Trade }): JSX.Element {
   const isBuy = trade.side === 'BUY';
+  const label = formatTradeActionLabel(trade);
+  const metaLabel = formatTradeMetaLabel(trade);
+  const pnl = trade.pnlUsd ?? 0;
+  const tone =
+    trade.pnlUsd !== undefined
+      ? pnl > 0
+        ? 'text-bull'
+        : pnl < 0
+          ? 'text-bear'
+          : 'text-muted'
+      : isBuy
+        ? 'text-bull'
+        : 'text-bear';
   const Icon = isBuy ? TrendingUp : TrendingDown;
   return (
     <div className="px-2 py-1.5 border-b border-border/30 last:border-0 hover:bg-surface-2 rounded text-xs">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <Icon size={12} className={isBuy ? 'text-bull' : 'text-bear'} />
-          <span className={cn('font-medium', isBuy ? 'text-bull' : 'text-bear')}>
-            {trade.side}
+          <span className={cn('font-medium', tone)}>
+            {label}
           </span>
+          <span className="text-muted font-mono text-2xs">{trade.side}</span>
           <span className="text-muted">·</span>
           <span className="font-mono">${formatPrice(trade.price)}</span>
         </div>
@@ -368,7 +389,7 @@ function TradeRow({ trade }: { trade: Trade }): JSX.Element {
               trade.pnlUsd > 0 ? 'text-bull' : trade.pnlUsd < 0 ? 'text-bear' : 'text-muted'
             )}
           >
-            {trade.pnlUsd >= 0 ? '+' : ''}${formatPrice(Math.abs(trade.pnlUsd))}
+            {formatSignedUsd(trade.pnlUsd)}
           </span>
         )}
       </div>
@@ -376,9 +397,30 @@ function TradeRow({ trade }: { trade: Trade }): JSX.Element {
         <span className="font-mono">{trade.quantity.toFixed(6)}</span>
         <span>{formatTimeShort(trade.createdAt)}</span>
       </div>
+      {metaLabel && (
+        <div className="mt-0.5 truncate text-2xs text-muted">
+          {metaLabel}
+        </div>
+      )}
     </div>
   );
 }
 
 // kullanılmıyor uyarısı engellesin
+function formatTradeActionLabel(trade: Trade): string {
+  const isClose = trade.pnlUsd !== undefined;
+  if (isClose) return trade.side === 'BUY' ? 'SHORT kapandi' : 'LONG kapandi';
+  return trade.side === 'BUY' ? 'LONG acildi' : 'SHORT acildi';
+}
+
+function formatTradeMetaLabel(trade: Trade): string {
+  const meta = trade.meta ?? {};
+  const pattern = typeof meta.pattern === 'string' ? meta.pattern : '';
+  const direction = typeof meta.direction === 'string' ? meta.direction : '';
+  const length = typeof meta.zigzag_length === 'number' || typeof meta.zigzag_length === 'string'
+    ? `L${meta.zigzag_length}`
+    : '';
+  return [pattern, length, direction].filter(Boolean).join(' ');
+}
+
 void Activity;

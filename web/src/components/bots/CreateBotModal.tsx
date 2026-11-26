@@ -102,7 +102,7 @@ export function CreateBotModal({
   const [slippageBps, setSlippageBps] = useState('2');
   const [allowRepaint, setAllowRepaint] = useState(true);
   const [stopLossMode, setStopLossMode] = useState<StopLossMode>('strategy');
-  const [stopLossTargetRatio, setStopLossTargetRatio] = useState('1');
+  const [stopLossTargetRatio, setStopLossTargetRatio] = useState('0.2');
   const [strategyParamsText, setStrategyParamsText] = useState('{}');
   const [createError, setCreateError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
@@ -1220,6 +1220,7 @@ function StrategyGuide({ onClose }: { onClose: () => void }): JSX.Element {
         <div className="space-y-2 text-muted">
           <SectionTitle title="Fonksiyonlar" />
           <GuideLine code="def initialize()" text="Opsiyonel. Strateji ilk yuklenirken varsayilan config dondurebilir." />
+          <GuideLine code="REQUIRES_FOOTPRINT = True" text="Stratejinin gerceklesen islem akisini istedigini bildirir." />
           <GuideLine code="def on_candle(candle, portfolio, config)" text="Zorunlu. Her kapanan mumda ust motor tarafindan cagrilir." />
           <GuideLine code="config" text="Bot ekranindaki o bot'a ozel JSON ayarlari burada okunur." />
           <GuideLine code="candle" text="Son kapanan mum: open, high, low, close, volume, time." />
@@ -1237,6 +1238,8 @@ function StrategyGuide({ onClose }: { onClose: () => void }): JSX.Element {
           <GuideLine code="indicators.rsi(14)" text="Hazir indikator ornegi." />
           <GuideLine code="indicators.ema(20)" text="Hazir indikator ornegi." />
           <GuideLine code="indicators.candles()" text="Gecmis mum listesini verir." />
+          <GuideLine code="indicators.footprint()" text="Son kapanan mumun delta, POC ve fiyat seviyesi hacimlerini verir." />
+          <GuideLine code="indicators.footprints()" text="Bot basladiktan sonra biriken tamamlanmis footprint listesini verir." />
           <GuideLine code="plot(series, title='EMA')" text="Seri degerlerini grafikte cizer." />
           <GuideLine code="line.new(p1, p2)" text="Iki {time, price} noktasi arasina cizgi cizer." />
           <GuideLine code="label.new(point, text='ABCD')" text="Bir {time, price} noktasina etiket koyar." />

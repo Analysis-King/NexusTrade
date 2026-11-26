@@ -51,11 +51,15 @@ STRATEGIES_DIR = os.path.join(_PYROOT, 'strategies')
 # ── Yardimci tipler — strateji koduna verilen API ───────────
 class _Indicators:
     """Strateji icinde `indicators` global'i olarak gorunur."""
-    def __init__(self, closes, candles):
+    def __init__(self, closes, candles, footprints=None, footprint=None):
         self._closes = closes
         self._candles = candles
+        self._footprints = footprints or []
+        self._footprint = footprint
 
     def candles(self):          return self._candles
+    def footprint(self):        return self._footprint
+    def footprints(self):       return self._footprints
     def rsi(self, period=14):    return calc_rsi(self._closes, period)
     def ema(self, period=20):    return calc_ema(self._closes, period)
     def sma(self, period=20):    return calc_sma(self._closes, period)
@@ -129,13 +133,20 @@ class PoolWorker:
         if hasattr(module, 'initialize'):
             defaults = module.initialize() or {}
             config = {**defaults, **config}
+        config = _resolve_module_config(module, config)
 
         self.instances[instance_id] = {
             'module': module,
             'config': config,
             'file': strategy_file,
         }
-        return {'config': config, 'file': strategy_file}
+        return {
+            'config': config,
+            'file': strategy_file,
+            'capabilities': {
+                'footprint': bool(getattr(module, 'REQUIRES_FOOTPRINT', False)),
+            },
+        }
 
     def _load_code(self, req):
         instance_id = req['instance']
@@ -147,13 +158,20 @@ class PoolWorker:
         if hasattr(module, 'initialize'):
             defaults = module.initialize() or {}
             config = {**defaults, **config}
+        config = _resolve_module_config(module, config)
 
         self.instances[instance_id] = {
             'module': module,
             'config': config,
             'file': strategy_file,
         }
-        return {'config': config, 'file': strategy_file}
+        return {
+            'config': config,
+            'file': strategy_file,
+            'capabilities': {
+                'footprint': bool(getattr(module, 'REQUIRES_FOOTPRINT', False)),
+            },
+        }
 
     def _validate_code(self, req):
         strategy_file = req.get('strategy_file') or 'inline_strategy.py'
@@ -227,7 +245,9 @@ class PoolWorker:
             req['candle'],
             req['candles'],
             req.get('portfolio', {}),
-            include_drawings=True,
+            include_drawings=bool(req.get('include_drawings', True)),
+            footprints_data=req.get('footprints') or [],
+            footprint_data=req.get('footprint'),
         )
 
     def _draw(self, req):
@@ -351,7 +371,17 @@ class PoolWorker:
         exec(code, module.__dict__)
         return module
 
-    def _run_on_candle(self, module, config, candle_data, candles_data, portfolio_data, include_drawings=False):
+    def _run_on_candle(
+        self,
+        module,
+        config,
+        candle_data,
+        candles_data,
+        portfolio_data,
+        include_drawings=False,
+        footprints_data=None,
+        footprint_data=None,
+    ):
         if not hasattr(module, 'on_candle'):
             raise RuntimeError('Strateji on_candle(candle, portfolio, config) fonksiyonu icermiyor')
 
@@ -392,7 +422,7 @@ class PoolWorker:
             })
         def _plot(series, title='', color='#D1D4DC', linewidth=1, style='line', trackprice=False,
                   histbase=None, offset=0, join=True, editable=True, show_last=None, display='all',
-                  format=None, precision=None, force_overlay=True, linestyle=None, group=None):
+                  format=None, precision=None, force_overlay=True, linestyle=None, group=None, role=None):
             points = _drawing_series_points(series, candles_data, offset, show_last)
             if not points:
                 return
@@ -413,9 +443,10 @@ class PoolWorker:
                 'force_overlay': bool(force_overlay),
                 'linestyle': linestyle,
                 'group': group,
+                'role': role,
             })
         def _line_new(first_point, second_point, xloc='bar_time', extend='none', color='#D1D4DC',
-                      style='solid', width=1, force_overlay=True, group=None):
+                      style='solid', width=1, force_overlay=True, group=None, role=None):
             p1 = _drawing_point(first_point, candles_data, xloc)
             p2 = _drawing_point(second_point, candles_data, xloc)
             if p1 is None or p2 is None:
@@ -431,9 +462,10 @@ class PoolWorker:
                 'width': int(float(width or 1)),
                 'force_overlay': bool(force_overlay),
                 'group': group,
+                'role': role,
             })
         def _label_new(point, text='', color='#D1D4DC', textcolor='#131722', style='label_up',
-                       size='normal', force_overlay=True, group=None):
+                       size='normal', force_overlay=True, group=None, role=None):
             p = _drawing_point(point, candles_data, 'bar_time')
             if p is None:
                 return
@@ -447,6 +479,7 @@ class PoolWorker:
                 'size': str(size or 'normal'),
                 'force_overlay': bool(force_overlay),
                 'group': group,
+                'role': role,
             })
 
         injected = {
@@ -457,7 +490,7 @@ class PoolWorker:
             'plot': _plot,
             'line': _DrawingFactory(_line_new),
             'label': _DrawingFactory(_label_new),
-            'indicators': _Indicators(closes, candles_data),
+            'indicators': _Indicators(closes, candles_data, footprints_data, footprint_data),
             'portfolio': _Portfolio(portfolio_data),
         }
         original = {}
@@ -552,10 +585,11 @@ class PoolWorker:
         slippage_bps = float(req.get('slippage_bps') or 0)
         fill_model = req.get('fill_model') or 'pessimistic_ohlc'
         params = {**(config if isinstance(config, dict) else {}), **(req.get('params') or {})}
+        params = _resolve_module_config(module, params)
         start_time = int(req.get('start_time') or 0)
         fee_rate = fee_bps / 10000.0
         slip_rate = slippage_bps / 10000.0
-        max_position = _float_param(params, 'max_position_usd', initial)
+        max_position = _float_param(params, 'max_position_usd', None)
         max_position_pct = _float_param(params, 'max_position_pct', None)
         leverage = max(1.0, _float_param(params, 'leverage', 1.0) or 1.0)
         default_sl = _float_param(params, 'stop_loss_pct', None)
@@ -563,6 +597,9 @@ class PoolWorker:
         stop_loss_mode = str(params.get('stop_loss_mode') or 'strategy')
         stop_loss_target_ratio = _float_param(params, 'stop_loss_target_ratio', 1.0) or 1.0
         same_candle_mode = str(params.get('same_candle_tp_sl') or 'stop_first')
+        stop_trigger_mode = str(params.get('stop_trigger_mode') or 'touch').strip().lower()
+        if stop_trigger_mode not in ('touch', 'close'):
+            stop_trigger_mode = 'touch'
         exit_on_opposite_signal = _bool_param(params, 'exit_on_opposite_signal', False)
         observation_horizon = max(1, int(_float_param(params, 'observation_horizon_bars', 10) or 10))
         observation_sl = _float_param(params, 'observation_stop_loss_pct', default_sl)
@@ -581,9 +618,19 @@ class PoolWorker:
         peak = initial
         max_dd = 0.0
         history = []
+        footprints_by_t = {}
+        for footprint in req.get('footprints') or []:
+            try:
+                footprints_by_t[int(footprint.get('t'))] = footprint
+            except (AttributeError, TypeError, ValueError):
+                continue
+        footprint_history = []
 
         for i, candle in enumerate(candles):
             history.append(candle)
+            current_footprint = footprints_by_t.get(int(candle.get('t') or 0))
+            if current_footprint is not None:
+                footprint_history.append(current_footprint)
             if pending_exit is not None and position is not None:
                 equity, realized_pnl = _close_position(
                     position, candle.get('o', candle['c']), candle['t'], pending_exit,
@@ -614,9 +661,13 @@ class PoolWorker:
                         else:
                             pending_signal = None
                     if pending_signal is not None and position is None:
-                        position_cap = max_position
                         if max_position_pct is not None and max_position_pct > 0:
-                            position_cap = equity * max_position_pct / 100.0
+                            allocation_pct = min(100.0, max_position_pct)
+                            position_cap = equity * allocation_pct / 100.0 * leverage
+                        else:
+                            position_cap = initial * leverage
+                        if max_position is not None and max_position > 0:
+                            position_cap = min(position_cap, max_position)
                         position = _open_position(
                             wanted_side,
                             candle,
@@ -632,7 +683,6 @@ class PoolWorker:
                             stop_loss_target_ratio,
                             min_reward_risk,
                             pending_signal.get('meta'),
-                            leverage,
                             price_key='o',
                         )
                         if position is not None:
@@ -651,7 +701,13 @@ class PoolWorker:
             pending_signal = None
 
             if position is not None:
-                exit_price, reason = _stop_or_target_price(position, candle, fill_model, same_candle_mode)
+                exit_price, reason = _stop_or_target_price(
+                    position,
+                    candle,
+                    fill_model,
+                    same_candle_mode,
+                    stop_trigger_mode,
+                )
                 if exit_price is not None and fill_model == 'pessimistic_ohlc':
                     equity, realized_pnl = _close_position(
                         position, exit_price, candle['t'], reason, fee_rate, slip_rate,
@@ -669,7 +725,15 @@ class PoolWorker:
             if position is not None:
                 portfolio['side'] = 'BUY' if position['side'] == 'long' else 'SELL'
 
-            signal_data = self._run_on_candle(module, config, candle, history, portfolio)
+            signal_data = self._run_on_candle(
+                module,
+                config,
+                candle,
+                history,
+                portfolio,
+                footprints_data=footprint_history,
+                footprint_data=current_footprint,
+            )
             signal = signal_data.get('signal') or 'hold'
             for observation in signal_data.get('observations') or []:
                 evaluated = _evaluate_observation(
@@ -716,6 +780,7 @@ class PoolWorker:
                 'signal_fill': 'next_open',
                 'fill_model': fill_model,
                 'same_candle_tp_sl': same_candle_mode,
+                'stop_trigger_mode': stop_trigger_mode,
                 'exit_on_opposite_signal': exit_on_opposite_signal,
                 'report_period_days': report_period_days,
                 'max_position_pct': max_position_pct,
@@ -741,6 +806,18 @@ _UNSET = _Unset()
 class _DrawingFactory:
     def __init__(self, new_fn):
         self.new = new_fn
+
+
+def _resolve_module_config(module, config):
+    resolver = getattr(module, 'resolve_config', None)
+    if not callable(resolver):
+        return config
+    resolved = resolver(dict(config or {}))
+    if resolved is None:
+        return config
+    if not isinstance(resolved, dict):
+        raise TypeError('resolve_config(config) dict dondurmeli')
+    return resolved
 
 
 def _float_param(params, key, fallback):
@@ -1029,12 +1106,9 @@ def _open_position(
     stop_loss_target_ratio=1.0,
     min_reward_risk=0.0,
     meta=None,
-    leverage=1.0,
     price_key='c',
 ):
-    leverage = max(1.0, float(leverage or 1.0))
-    base_notional = min(float(max_position or equity), equity)
-    notional = max(0.0, base_notional * leverage)
+    notional = max(0.0, float(max_position or equity))
     if notional <= 0:
         return None
     tp_requested = tp_pct is not None or tp_price is not None
@@ -1160,7 +1234,7 @@ def _apply_risk_update(position, signal_data, reference_price, stop_loss_mode='s
 
     if sl_price is not None and (tp_price is None or tp_valid):
         sl = float(sl_price)
-        if (side == 'long' and sl < entry) or (side == 'short' and sl > entry):
+        if (side == 'long' and sl < ref) or (side == 'short' and sl > ref):
             next_sl = sl
             changed = True
 
@@ -1175,7 +1249,13 @@ def _apply_risk_update(position, signal_data, reference_price, stop_loss_mode='s
     position['tp'] = next_tp
 
 
-def _stop_or_target_price(position, candle, fill_model='pessimistic_ohlc', same_candle_mode='stop_first'):
+def _stop_or_target_price(
+    position,
+    candle,
+    fill_model='pessimistic_ohlc',
+    same_candle_mode='stop_first',
+    stop_trigger_mode='touch',
+):
     side = position['side']
     sl = position.get('sl')
     tp = position.get('tp')
@@ -1196,23 +1276,29 @@ def _stop_or_target_price(position, candle, fill_model='pessimistic_ohlc', same_
         return None, None
 
     if side == 'long':
-        if sl is not None and open_price <= sl:
+        if stop_trigger_mode == 'touch' and sl is not None and open_price <= sl:
             return open_price, 'sl'
         if tp is not None and open_price >= tp:
             return open_price, 'tp'
-        hit_sl = sl is not None and candle['l'] <= sl
+        hit_sl = sl is not None and (
+            close_price <= sl if stop_trigger_mode == 'close' else candle['l'] <= sl
+        )
         hit_tp = tp is not None and candle['h'] >= tp
     else:
-        if sl is not None and open_price >= sl:
+        if stop_trigger_mode == 'touch' and sl is not None and open_price >= sl:
             return open_price, 'sl'
         if tp is not None and open_price <= tp:
             return open_price, 'tp'
-        hit_sl = sl is not None and candle['h'] >= sl
+        hit_sl = sl is not None and (
+            close_price >= sl if stop_trigger_mode == 'close' else candle['h'] >= sl
+        )
         hit_tp = tp is not None and candle['l'] <= tp
     if hit_sl and hit_tp:
-        return (tp, 'tp') if same_candle_mode == 'take_profit_first' else (sl, 'sl')
+        if same_candle_mode == 'take_profit_first':
+            return tp, 'tp'
+        return (close_price if stop_trigger_mode == 'close' else sl), 'sl'
     if hit_sl:
-        return sl, 'sl'
+        return (close_price if stop_trigger_mode == 'close' else sl), 'sl'
     if hit_tp:
         return tp, 'tp'
     return None, None

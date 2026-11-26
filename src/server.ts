@@ -10,15 +10,33 @@
  */
 
 import http from 'node:http';
+import path from 'node:path';
 import { createApp } from './app.js';
 import { getBotManager } from './bot/manager.js';
 import { env, isDev } from './config/env.js';
+import { startPaperPortfolioSupervisor } from './services/paperPortfolioSupervisor.js';
 import { NexusWebSocketServer } from './services/wsServer.js';
 import { getStorage } from './storage/index.js';
+import { cleanupStaleTempFiles } from './storage/json/atomicFile.js';
 import { createLogger } from './utils/logger.js';
-import { getWorkerPool, shutdownWorkerPool } from './workers/pool.js';
+import { getJobWorkerPool, getWorkerPool, shutdownWorkerPool } from './workers/pool.js';
 
 const log = createLogger('server');
+
+function isBrokenPipe(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  return code === 'EPIPE' || code === 'EOF' || message.includes('write EPIPE') || message.includes('write EOF');
+}
+
+// Windows'ta konsol kapaninca stdout/stderr EPIPE uretebilir. Cikti
+// kanalinin kopmasi HTTP ve WebSocket sunucusunu kapatmamalidir.
+process.stdout?.on('error', (err) => {
+  if (!isBrokenPipe(err)) process.exitCode = 1;
+});
+process.stderr?.on('error', (err) => {
+  if (!isBrokenPipe(err)) process.exitCode = 1;
+});
 
 async function main(): Promise<void> {
   const app = createApp();
@@ -27,28 +45,29 @@ async function main(): Promise<void> {
   // WebSocket sunucusu — HTTP server'a attach et (path: /ws)
   const wsServer = new NexusWebSocketServer(server);
 
-  // Python worker pool — bot motoru bunu kullanacak
-  const pool = getWorkerPool();
-  await pool.start();
+  // Onceki basarisiz/yarim yazimlardan kalan yetim tmp dosyalarini temizle.
+  await cleanupDataTempFiles();
 
-  // Bot manager — kayıtlı botları yükle (running'leri paused yapar)
+  // Bot manager route'lar gelmeden singleton olarak hazir olsun.
   const storage = getStorage();
   const botManager = getBotManager(storage);
-  await botManager.bootstrap();
 
-  // Bot olaylarını WS üzerinden frontend'e yay
+  // Bot olaylarini WS uzerinden frontend'e yay.
   botManager.on('any', (evt: { type: string; botId: string; payload: unknown }) => {
     wsServer.broadcast({ type: 'bot-event', event: evt.type, botId: evt.botId, payload: evt.payload });
   });
 
-  server.listen(env.PORT, env.HOST, () => {
-    log.info(
-      { host: env.HOST, port: env.PORT, env: env.NODE_ENV },
-      `NexusTrade started in ${isDev ? 'DEV' : 'PROD'} mode at http://${env.HOST}:${env.PORT}`
-    );
-    log.info(`WebSocket: ws://${env.HOST}:${env.PORT}/ws`);
-  });
+  // HTTP/WS once acilsin; worker ve bot isinmasi arkada devam ederken
+  // frontend proxy hatasi basmasin.
+  await listen(server);
 
+  // Python worker pool - bot motoru bunu kullanacak.
+  // Backtest/cizim isleri ayri havuzda: uzun isler bot tick'lerini bloklamaz.
+  await Promise.all([getWorkerPool().start(), getJobWorkerPool().start()]);
+
+  // Kayitli botlari yukle, running paper botlari yeniden baslat.
+  await botManager.bootstrap();
+  const stopPaperPortfolioSupervisor = startPaperPortfolioSupervisor();
   // ── Graceful shutdown ─────────────────────────────────────
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
@@ -66,6 +85,7 @@ async function main(): Promise<void> {
 
     // Bot manager — tüm botları durdur
     try {
+      stopPaperPortfolioSupervisor();
       await botManager.shutdown();
       log.info('Bot manager kapandi');
     } catch (err) {
@@ -117,18 +137,52 @@ async function main(): Promise<void> {
     return (
       msg.includes('WebSocket was closed before') ||
       msg.includes('Opening handshake has timed out') ||
+      msg.includes('write EPIPE') ||
+      msg.includes('write EOF') ||
       msg.includes('ECONNRESET') ||
-      msg.includes('ECONNREFUSED')
+      msg.includes('ECONNREFUSED') ||
+      (err as NodeJS.ErrnoException)?.code === 'EPIPE' ||
+      (err as NodeJS.ErrnoException)?.code === 'EOF'
     );
   };
 
   process.on('uncaughtException', (err) => {
     if (isRecoverable(err)) {
+      if (isBrokenPipe(err)) return;
       log.warn({ err: err.message }, 'Recoverable runtime error — devam ediliyor');
       return;
     }
     log.fatal({ err }, 'Uncaught exception - kapatiliyor');
     setTimeout(() => process.exit(1), 500).unref();
+  });
+}
+
+async function cleanupDataTempFiles(): Promise<void> {
+  for (const dir of [env.DATA_DIR, path.join(env.DATA_DIR, 'backtests')]) {
+    try {
+      const { files, bytes } = await cleanupStaleTempFiles(dir);
+      if (files > 0) {
+        log.info({ dir, files, mb: Math.round(bytes / 1024 / 1024) }, 'Yetim tmp dosyalari temizlendi');
+      }
+    } catch (err) {
+      log.warn({ dir, err }, 'Tmp dosya temizligi yapilamadi');
+    }
+  }
+}
+
+function listen(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (err: Error): void => reject(err);
+    server.once('error', onError);
+    server.listen(env.PORT, env.HOST, () => {
+      server.off('error', onError);
+      log.info(
+        { host: env.HOST, port: env.PORT, env: env.NODE_ENV },
+        `NexusTrade started in ${isDev ? 'DEV' : 'PROD'} mode at http://${env.HOST}:${env.PORT}`
+      );
+      log.info(`WebSocket: ws://${env.HOST}:${env.PORT}/ws`);
+      resolve();
+    });
   });
 }
 

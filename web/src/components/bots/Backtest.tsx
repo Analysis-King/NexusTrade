@@ -78,7 +78,7 @@ export function Backtest({ bot }: { bot: BotConfig }): JSX.Element {
           stop_loss_pct: bot.risk.maxLossPct,
           take_profit_pct: bot.risk.takeProfitPct,
           stop_loss_mode: bot.risk.stopLossMode ?? 'target_ratio',
-          stop_loss_target_ratio: bot.risk.stopLossTargetRatio ?? 1,
+          stop_loss_target_ratio: bot.risk.stopLossTargetRatio ?? 0.2,
           max_position_usd: bot.risk.maxPositionUsd,
           report_period_days: Number(reportPeriodDays),
         },
@@ -229,10 +229,9 @@ function BacktestResult({ result }: { result: BacktestRun }): JSX.Element {
     .filter((pattern) => pattern.trades > 0)
     .sort((a, b) => b.totalReturnPct - a.totalReturnPct)
     .slice(0, 3);
-  const topObservations = (result.observationStats ?? [])
+  const observationRows = (result.observationStats ?? [])
     .filter((item) => item.count > 0)
-    .sort((a, b) => b.winRatePct - a.winRatePct)
-    .slice(0, 3);
+    .sort((a, b) => b.count - a.count || b.winRatePct - a.winRatePct);
   const recentReports = (result.periodReports ?? []).slice(-3);
   const recentTrades = (result.trades ?? []).slice(-3);
 
@@ -270,16 +269,40 @@ function BacktestResult({ result }: { result: BacktestRun }): JSX.Element {
             </div>
           )}
 
-          {topObservations.length > 0 && (
-            <div className="border-t border-border pt-2 space-y-1">
-              {topObservations.map((item) => (
-                <div key={`${item.name}-${item.side}`} className="flex items-center justify-between gap-2">
-                  <span className="text-muted truncate">{item.name}</span>
-                  <span className="font-mono tabular-nums text-text">
-                    {item.count} gozlem - {formatNumber(item.winRatePct)}%
-                  </span>
+          {observationRows.length > 0 && (
+            <div className="border-t border-border pt-2">
+              <div className="mb-1 text-2xs uppercase tracking-wider text-muted">Formasyon analizi</div>
+              <div className="overflow-hidden rounded border border-border">
+                <div className="grid grid-cols-[1fr_38px_40px_48px_50px_50px_50px] gap-1 border-b border-border px-2 py-1 text-2xs uppercase tracking-wider text-muted">
+                  <span>Ad</span>
+                  <span className="text-right">Yon</span>
+                  <span className="text-right">Adet</span>
+                  <span className="text-right">Win</span>
+                  <span className="text-right">Ort</span>
+                  <span className="text-right">Kotu</span>
+                  <span className="text-right">En iyi</span>
                 </div>
-              ))}
+                {observationRows.map((item) => (
+                  <div
+                    key={`${item.name}-${item.side}`}
+                    className="grid grid-cols-[1fr_38px_40px_48px_50px_50px_50px] gap-1 border-b border-border/50 px-2 py-1 text-2xs last:border-0"
+                  >
+                    <span className="truncate text-text">{item.name}</span>
+                    <span className="text-right font-mono text-muted">{item.side}</span>
+                    <span className="text-right font-mono text-text">{item.count}</span>
+                    <span className="text-right font-mono text-text">{formatNumber(item.winRatePct)}%</span>
+                    <span className={`text-right font-mono ${safeNumber(item.avgReturnPct) >= 0 ? 'text-bull' : 'text-bear'}`}>
+                      {formatPct(item.avgReturnPct)}
+                    </span>
+                    <span className={`text-right font-mono ${safeNumber(item.worstReturnPct) >= 0 ? 'text-bull' : 'text-bear'}`}>
+                      {formatPct(item.worstReturnPct)}
+                    </span>
+                    <span className={`text-right font-mono ${safeNumber(item.bestReturnPct) >= 0 ? 'text-bull' : 'text-bear'}`}>
+                      {formatPct(item.bestReturnPct)}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

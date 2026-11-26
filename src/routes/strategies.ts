@@ -8,11 +8,14 @@
  * DELETE /api/strategies/:filename  — sil
  */
 
+import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import { getStrategyService } from '../services/strategies.js';
 import { asyncHandler } from './middleware.js';
-import { getWorkerPool } from '../workers/pool.js';
+import { getJobWorkerPool as getWorkerPool } from '../workers/pool.js';
+import { candleToRaw } from '../workers/types.js';
+import type { Candle } from '../types/domain.js';
 
 export const strategyRouter = Router();
 
@@ -32,6 +35,21 @@ const updateBody = z.object({
 const validateBody = z.object({
   filename: z.string().min(1).max(120).default('inline_strategy.py'),
   code: z.string().min(1).max(200_000),
+});
+
+const candleSchema = z.object({
+  openTime: z.coerce.number().int().positive(),
+  open: z.coerce.number(),
+  high: z.coerce.number(),
+  low: z.coerce.number(),
+  close: z.coerce.number(),
+  volume: z.coerce.number(),
+  closeTime: z.coerce.number().int().positive().optional(),
+});
+
+const drawBody = z.object({
+  candles: z.array(candleSchema).min(2).max(2000),
+  params: z.record(z.unknown()).default({}),
 });
 
 strategyRouter.get(
@@ -57,6 +75,27 @@ strategyRouter.post(
     const { filename, code } = validateBody.parse(req.body);
     const data = await getWorkerPool().validateCode(filename, code);
     res.json({ ok: true, data });
+  })
+);
+
+strategyRouter.post(
+  '/:filename/draw',
+  asyncHandler(async (req, res) => {
+    const { filename } = filenameParam.parse(req.params);
+    const body = drawBody.parse(req.body);
+    const candles: Candle[] = body.candles.map((candle) => ({
+      ...candle,
+      closeTime: candle.closeTime ?? candle.openTime,
+    }));
+    const instance = `strategy-draw-${randomUUID()}`;
+    const pool = getWorkerPool();
+    await pool.load(instance, filename, body.params);
+    try {
+      const data = await pool.draw(instance, { candles: candles.map(candleToRaw) });
+      res.json({ ok: true, data });
+    } finally {
+      await pool.drop(instance).catch(() => undefined);
+    }
   })
 );
 

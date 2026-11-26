@@ -62,6 +62,7 @@ export interface Position {
   unrealizedPnlUsd?: number;
   stopLossPrice?: number;
   takeProfitPrice?: number;
+  meta?: Record<string, unknown>;
   openedAt: number;
 }
 
@@ -81,6 +82,7 @@ export type StrategyDrawing =
       style?: string;
       linestyle?: string;
       group?: string;
+      role?: string;
       force_overlay?: boolean;
     }
   | {
@@ -91,6 +93,7 @@ export type StrategyDrawing =
       style?: string;
       width?: number;
       group?: string;
+      role?: string;
       force_overlay?: boolean;
     }
   | {
@@ -102,6 +105,7 @@ export type StrategyDrawing =
       style?: string;
       size?: string;
       group?: string;
+      role?: string;
       force_overlay?: boolean;
     };
 
@@ -117,6 +121,7 @@ export interface Trade {
   pnlUsd?: number;
   stopLossPrice?: number;
   takeProfitPrice?: number;
+  meta?: Record<string, unknown>;
   mode: BotMode;
   exchangeOrderId?: string;
   clientOrderId: string;
@@ -134,6 +139,91 @@ export interface BotSnapshot {
     lastSignal: Signal | null;
     drawings: StrategyDrawing[];
   };
+}
+
+export interface PaperPortfolioPosition {
+  id: string;
+  symbol: string;
+  side: 'long' | 'short';
+  rawEntry?: number;
+  entry: number;
+  sl: number;
+  tp: number;
+  targetPct: number;
+  qty?: number;
+  signalTime?: number;
+  entryTime?: number;
+  allocation?: number;
+  entryFee?: number;
+  lastCheckedT?: number;
+  signalKey?: string;
+  openedAtIso: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface PaperPortfolioTrade {
+  id: string;
+  symbol: string;
+  side: 'long' | 'short';
+  entryTime: number;
+  entryTimeIso?: string;
+  entryPrice: number;
+  slPrice?: number;
+  tpPrice?: number;
+  exitTime: number;
+  exitTimeIso?: string;
+  exitPrice: number;
+  allocation?: number;
+  netPnl: number;
+  pnlPct?: number;
+  accountReturnPct?: number;
+  fees?: number;
+  reason?: string;
+  meta?: Record<string, unknown>;
+}
+
+export interface PaperPortfolioReport {
+  sourceFile: string;
+  generatedAt: number;
+  generatedAtIso: string;
+  startedAtIso: string;
+  stopAtIso: string;
+  stoppedAtIso?: string | null;
+  /** running: islem aciyor · closing: sure doldu, acik pozisyonlar kapaniyor · completed · stopped: elle durduruldu */
+  status: 'running' | 'closing' | 'completed' | 'stopped' | string;
+  runtimeStatus?: 'running' | 'closing' | 'stale' | 'completed' | 'stopped' | string;
+  runtimeAlive?: boolean;
+  runtimePid?: number | null;
+  runtimeStale?: boolean;
+  /** Supervisor yonetiyor mu; durdur/uzat sadece bunlarda var. */
+  controllable?: boolean;
+  pendingAction?: 'stop' | 'extend' | null;
+  actionError?: string | null;
+  elapsedDays: number;
+  remainingDays: number;
+  config: {
+    botName?: string;
+    strategyFile?: string;
+    interval?: string;
+    symbolCount?: number;
+    maxPositions?: number;
+    portfolioLeverage?: number;
+  };
+  symbols: string[];
+  metrics: {
+    realizedEquity: number;
+    markEquity: number;
+    totalReturnPct: number;
+    markReturnPct: number;
+    compoundDailyReturnPct: number;
+    markCompoundDailyReturnPct: number;
+    closedTrades: number;
+    openPositions: number;
+    winRatePct: number | null;
+    markMaxDrawdownPct: number;
+  };
+  openPositions: PaperPortfolioPosition[];
+  recentTrades?: PaperPortfolioTrade[];
 }
 
 export interface Ticker24h {

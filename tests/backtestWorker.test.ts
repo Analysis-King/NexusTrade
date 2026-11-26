@@ -91,7 +91,11 @@ async function runBacktest(
   sourceCode: string,
   rows: Array<[number, number, number, number]>,
   params: Record<string, unknown> = {},
-  options: { feeBps?: number; slippageBps?: number } = {}
+  options: {
+    feeBps?: number;
+    slippageBps?: number;
+    footprints?: Array<Record<string, unknown>>;
+  } = {}
 ) {
   const { child, request } = startWorker();
   const instance = `test_${randomUUID()}`;
@@ -105,6 +109,7 @@ async function runBacktest(
     return await request<Record<string, unknown>>('backtest', {
       instance,
       candles: candles(rows),
+      footprints: options.footprints,
       initial_capital: 1000,
       fee_bps: options.feeBps ?? 0,
       slippage_bps: options.slippageBps ?? 0,
@@ -117,6 +122,90 @@ async function runBacktest(
 }
 
 describe('universal Python backtest worker', () => {
+  test('lets a strategy normalize and lock its universal execution config', async () => {
+    const result = await runBacktest(
+      `
+done = False
+
+def resolve_config(config):
+    config["stop_loss_mode"] = "percent"
+    config["stop_loss_pct"] = 1
+    config["take_profit_pct"] = 1
+    return config
+
+def on_candle(candle, portfolio, config):
+    global done
+    if not done:
+        done = True
+        buy()
+    else:
+        hold()
+`,
+      [
+        [100, 100, 100, 100],
+        [100, 101, 100, 101],
+        [101, 101, 101, 101],
+      ],
+      { stop_loss_pct: 10, take_profit_pct: 10 }
+    );
+
+    expect(result.summary).toMatchObject({
+      finalCapital: 1001,
+      totalReturnPct: 0.1,
+      totalTrades: 1,
+    });
+    expect(result.trades).toMatchObject([{ reason: 'tp', tpPrice: 101 }]);
+  });
+
+  test('exposes supplied footprint data to universal strategies', async () => {
+    const result = await runBacktest(
+      `
+done = False
+
+def on_candle(candle, portfolio, config):
+    global done
+    footprint = indicators.footprint()
+    if not done and footprint and footprint.get("delta", 0) > 0:
+        done = True
+        buy()
+    else:
+        hold()
+`,
+      [
+        [100, 101, 99, 100],
+        [110, 111, 109, 110],
+        [121, 121, 121, 121],
+      ],
+      {},
+      {
+        footprints: [
+          {
+            t: 1_700_000_000_000,
+            complete: true,
+            trades: 10,
+            buy_trades: 7,
+            sell_trades: 3,
+            buy_volume: 7,
+            sell_volume: 3,
+            delta: 4,
+            total_volume: 10,
+            buy_notional: 700,
+            sell_notional: 300,
+            delta_notional: 400,
+            total_notional: 1000,
+            poc_price: 100,
+            levels: [],
+          },
+        ],
+      }
+    );
+
+    expect(result.summary).toMatchObject({
+      totalTrades: 1,
+      finalCapital: 1010,
+    });
+  });
+
   test('fills strategy signals on the next candle open', async () => {
     const result = await runBacktest(
       `
@@ -146,6 +235,74 @@ def on_candle(candle, portfolio, config):
       {
         pattern: 'Long',
         totalReturnPct: 1,
+      },
+    ]);
+  });
+
+  test('treats max_position_usd as the final hard notional cap after leverage', async () => {
+    const result = await runBacktest(
+      `
+done = False
+
+def on_candle(candle, portfolio, config):
+    global done
+    if not done:
+        done = True
+        buy()
+    else:
+        hold()
+`,
+      [
+        [100, 100, 100, 100],
+        [100, 100, 100, 100],
+        [110, 110, 110, 110],
+      ],
+      { leverage: 2, max_position_usd: 100 }
+    );
+
+    expect(result.summary).toMatchObject({
+      finalCapital: 1010,
+      totalReturnPct: 1,
+      totalTrades: 1,
+    });
+    expect(result.trades).toMatchObject([
+      {
+        notional: 100,
+        netPnl: 10,
+      },
+    ]);
+  });
+
+  test('applies leverage to percentage allocation before the hard notional cap', async () => {
+    const result = await runBacktest(
+      `
+done = False
+
+def on_candle(candle, portfolio, config):
+    global done
+    if not done:
+        done = True
+        buy()
+    else:
+        hold()
+`,
+      [
+        [100, 100, 100, 100],
+        [100, 100, 100, 100],
+        [110, 110, 110, 110],
+      ],
+      { leverage: 2, max_position_pct: 100, max_position_usd: 2500 }
+    );
+
+    expect(result.summary).toMatchObject({
+      finalCapital: 1200,
+      totalReturnPct: 20,
+      totalTrades: 1,
+    });
+    expect(result.trades).toMatchObject([
+      {
+        notional: 2000,
+        netPnl: 200,
       },
     ]);
   });
@@ -184,6 +341,43 @@ def on_candle(candle, portfolio, config):
         tpPrice: 110,
         notional: 100,
         netPnl: -10,
+      },
+    ]);
+  });
+
+  test('can require a candle close to trigger the stop while targets still use intrabar prices', async () => {
+    const result = await runBacktest(
+      `
+done = False
+
+def on_candle(candle, portfolio, config):
+    global done
+    if not done:
+        done = True
+        buy()
+        set_sl(price=98)
+        set_tp(price=110)
+    else:
+        hold()
+`,
+      [
+        [100, 100, 100, 100],
+        [100, 101, 97, 99],
+        [99, 110, 99, 110],
+      ],
+      { stop_trigger_mode: 'close' }
+    );
+
+    expect(result.summary).toMatchObject({
+      finalCapital: 1010,
+      totalReturnPct: 1,
+      totalTrades: 1,
+    });
+    expect(result.trades).toMatchObject([
+      {
+        reason: 'tp',
+        slPrice: 98,
+        tpPrice: 110,
       },
     ]);
   });
@@ -348,6 +542,41 @@ def on_candle(candle, portfolio, config):
         side: 'long',
         reason: 'sl',
         slPrice: 95,
+      },
+    ]);
+  });
+
+  test('allows an open position stop to trail into profit after price moves', async () => {
+    const result = await runBacktest(
+      `
+step = 0
+
+def on_candle(candle, portfolio, config):
+    global step
+    if step == 0:
+        step = 1
+        buy()
+        set_sl(price=95)
+        set_tp(price=115)
+    elif portfolio.has_position:
+        set_sl(price=104)
+        hold()
+    else:
+        hold()
+`,
+      [
+        [100, 100, 100, 100],
+        [100, 111, 100, 110],
+        [110, 111, 103, 104],
+      ]
+    );
+
+    expect(result.trades).toMatchObject([
+      {
+        side: 'long',
+        reason: 'sl',
+        slPrice: 104,
+        pnlPct: 4,
       },
     ]);
   });

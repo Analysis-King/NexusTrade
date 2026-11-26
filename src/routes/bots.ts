@@ -16,13 +16,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getBotManager } from '../bot/manager.js';
-import {
-  buildPortfolioBotDrafts,
-  loadPortfolioProfileGate,
-  type PortfolioDeployOptions,
-} from '../services/profileGate.js';
 import { getStorage } from '../storage/index.js';
-import type { BotConfig } from '../types/domain.js';
 import { asyncHandler } from './middleware.js';
 
 export const botRouter = Router();
@@ -67,19 +61,6 @@ const updateSchema = z.object({
   risk: riskSchema,
 });
 
-const profileGateDeploySchema = z.object({
-  capitalUsd: z.number().min(10).max(10_000_000).default(1000),
-  mode: z.enum(['paper', 'live']).default('paper'),
-  prefix: z.string().min(1).max(24).default('Gate'),
-  maxLossPct: z.number().min(0.1).max(50).default(2),
-  takeProfitPct: z.number().min(0.1).max(100).default(4),
-  dailyMaxLossPct: z.number().min(0.1).max(100).default(6),
-  stopLossMode: z.enum(['percent', 'target_ratio', 'strategy']).default('strategy'),
-  stopLossTargetRatio: z.number().min(0.1).max(10).default(1),
-  leverage: z.number().min(1).max(10).optional(),
-  start: z.boolean().default(false),
-});
-
 const idParam = z.object({ id: z.string().uuid() });
 
 /* ─── Routes ───────────────────────────────────────────── */
@@ -89,65 +70,6 @@ botRouter.get(
   asyncHandler(async (_req, res) => {
     const data = await getBotManager().list();
     res.json({ ok: true, data });
-  })
-);
-
-botRouter.get(
-  '/profile-gate',
-  asyncHandler(async (_req, res) => {
-    const gate = await loadPortfolioProfileGate();
-    const drafts = buildPortfolioBotDrafts(gate, {
-      capitalUsd: 1000,
-      mode: 'paper',
-      prefix: 'Gate',
-      maxLossPct: 2,
-      takeProfitPct: 4,
-      dailyMaxLossPct: 6,
-      stopLossMode: 'strategy',
-      stopLossTargetRatio: 1,
-    });
-    res.json({ ok: true, data: { ...gate, drafts } });
-  })
-);
-
-botRouter.post(
-  '/profile-gate/deploy',
-  asyncHandler(async (req, res) => {
-    const { start, ...options } = profileGateDeploySchema.parse(req.body);
-    const deployOptions = options as PortfolioDeployOptions;
-    const gate = await loadPortfolioProfileGate();
-    const drafts = buildPortfolioBotDrafts(gate, deployOptions);
-    const manager = getBotManager();
-    const existing = await manager.list();
-    const created: Array<{ profile: string; bot: BotConfig }> = [];
-    const skipped: Array<{ profile: string; reason: 'exists'; bot: BotConfig }> = [];
-
-    for (const draft of drafts) {
-      const match = existing.find((bot) => bot.name === draft.bot.name);
-      if (match) {
-        skipped.push({ profile: draft.profile, reason: 'exists', bot: match });
-        continue;
-      }
-
-      const bot = await manager.create(draft.bot);
-      created.push({ profile: draft.profile, bot });
-      existing.push(bot);
-
-      if (start) {
-        await manager.start(bot.id);
-      }
-    }
-
-    res.status(201).json({
-      ok: true,
-      data: {
-        gate: { ...gate, drafts },
-        drafts,
-        created,
-        skipped,
-        started: start,
-      },
-    });
   })
 );
 

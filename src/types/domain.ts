@@ -91,6 +91,7 @@ export interface Trade {
   pnlUsd?: number;
   stopLossPrice?: number;
   takeProfitPrice?: number;
+  meta?: Record<string, unknown>;
   mode: BotMode;
   /** Binance'de ilgili order ID (live modda). */
   exchangeOrderId?: string;
@@ -109,6 +110,7 @@ export interface Position {
   unrealizedPnlUsd?: number;
   stopLossPrice?: number;
   takeProfitPrice?: number;
+  meta?: Record<string, unknown>;
   openedAt: number;
 }
 
@@ -128,6 +130,7 @@ export type StrategyDrawing =
       style?: string;
       linestyle?: string;
       group?: string;
+      role?: string;
       force_overlay?: boolean;
     }
   | {
@@ -138,6 +141,7 @@ export type StrategyDrawing =
       style?: string;
       width?: number;
       group?: string;
+      role?: string;
       force_overlay?: boolean;
     }
   | {
@@ -149,6 +153,7 @@ export type StrategyDrawing =
       style?: string;
       size?: string;
       group?: string;
+      role?: string;
       force_overlay?: boolean;
     };
 

@@ -10,36 +10,28 @@
  * her birinin detayını paralel çek.
  */
 
-import { useQueries, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo } from 'react';
+import { useQueries } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { Loader2, Wallet, TrendingUp } from 'lucide-react';
 import { botsApi } from '@/api/endpoints';
-import { ws } from '@/api/ws';
-import { useBots } from '@/hooks/useBots';
+import { BOT_FALLBACK_POLL_MS, useBots } from '@/hooks/useBots';
 import { Badge } from '@/components/ui/Badge';
-import { formatPrice } from '@/lib/format';
+import { formatPrice, formatSignedUsd } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import type { BotConfig, Position } from '@/types/api';
 
 export function PortfolioPanel(): JSX.Element {
   const { data: bots, isLoading } = useBots();
-  const qc = useQueryClient();
 
-  // Her bot için detay sorgusu
+  // Her bot için detay sorgusu. Guncellemeler WS olaylariyla (useBotEventSync)
+  // gelir; buradaki yoklama yalnizca yavas bir yedek.
   const detailQueries = useQueries({
     queries: (bots ?? []).map((b) => ({
       queryKey: ['bots', b.id],
       queryFn: () => botsApi.get(b.id),
-      refetchInterval: 5_000,
+      refetchInterval: BOT_FALLBACK_POLL_MS,
     })),
   });
-
-  // WS bot-event geldiğinde tüm portföyü tazele
-  useEffect(() => {
-    return ws.onBotEvent(() => {
-      qc.invalidateQueries({ queryKey: ['bots'] });
-    });
-  }, [qc]);
 
   const summary = useMemo(() => {
     let totalCapital = 0;
@@ -172,7 +164,7 @@ function SummaryRow({
 }): JSX.Element {
   const formatted =
     kind === 'pnl'
-      ? `${value >= 0 ? '+' : ''}$${formatPrice(Math.abs(value))}`
+      ? formatSignedUsd(value)
       : `$${formatPrice(value)}`;
   const color =
     kind === 'pnl'

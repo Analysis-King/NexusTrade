@@ -24,12 +24,12 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { useQuery } from '@tanstack/react-query';
-import { indicatorsApi, marketApi } from '@/api/endpoints';
+import { indicatorsApi, marketApi, paperPortfoliosApi, strategiesApi } from '@/api/endpoints';
 import { ws } from '@/api/ws';
 import { useAppStore, type DrawingMode } from '@/store/app';
 import { useBot } from '@/hooks/useBots';
 import { closesOf, computeEMA, computeRSI } from '@/lib/indicators';
-import type { Candle, DrawingPoint, StrategyDrawing } from '@/types/api';
+import type { Candle, DrawingPoint, Position, StrategyDrawing } from '@/types/api';
 
 /** Tema renkleri — globals.css değerleriyle senkron tutulmalı. */
 const C = {
@@ -44,6 +44,8 @@ const C = {
   rsi: '#A78BFA',     // Mor — TradingView default RSI tonu
   rsiBand: '#7F8AA0', // 30/70 bantları
 };
+
+const CHART_CANDLE_LIMIT = 5000;
 
 /** Backend Candle → Lightweight Charts CandlestickData (saniye cinsinden time). */
 function toCandleData(c: Candle): CandlestickData {
@@ -95,7 +97,22 @@ type OverlayElement =
       textColor: string;
       isUp: boolean;
       stackIndex: number;
+      xOffset: number;
+      /** Etiketin sag kenari bu x'i gecmez; fiyat eksenindeki etiketleri ortmesin. */
+      maxRight: number;
     };
+
+/**
+ * Fiyat ekseni ondalik hassasiyeti: ~5 anlamli basamak (en az 2, en fazla 8).
+ * Kutuphane varsayilani 2 ondalik oldugundan ADA gibi dusuk fiyatli coinlerde
+ * eksen, SL/TP ve giris etiketleri "0.14" gibi ayni degere yuvarlaniyordu.
+ *   60000 -> 2 · 150 -> 2 · 1.5 -> 4 · 0.1445 -> 5 · 0.00001234 -> 8
+ */
+function pricePrecisionFor(price: number | undefined): number {
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return 2;
+  const digitsBeforePoint = Math.floor(Math.log10(price)) + 1;
+  return Math.max(2, Math.min(8, 5 - digitsBeforePoint));
+}
 
 function toChartTime(raw: number): UTCTimestamp {
   return Math.floor(raw > 1_000_000_000_000 ? raw / 1000 : raw) as UTCTimestamp;
@@ -106,9 +123,10 @@ function pointValue(point: DrawingPoint): number | null {
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
 }
 
-function clampOverlayX(x: number, width: number): number {
-  if (!Number.isFinite(x) || width <= 0) return x;
-  return Math.max(8, Math.min(width - 72, x));
+/** x'i cizim alanina (fiyat ekseni haric) sigdirir; plotWidth = timeScale().width(). */
+function clampOverlayX(x: number, plotWidth: number): number {
+  if (!Number.isFinite(x) || plotWidth <= 0) return x;
+  return Math.max(8, Math.min(plotWidth - 8, x));
 }
 
 function widthOf(raw: unknown, fallback = 1): number {
@@ -124,24 +142,135 @@ function dashOf(style?: string): string | undefined {
   return undefined;
 }
 
+// Strateji cizimlerindeki tahmini seviyeler: pattern'in kendi SL/TP rehberi,
+// hedefleri ve teyit bolgesi. Acik pozisyon yokken "bu setup'a girilse seviyeler
+// ne olurdu" bilgisini verir. Pozisyon acikken ise pozisyonun gercek
+// Giris/SL/TP setiyle ayni isimlerde ikinci bir set olusturup hangisinin gercek
+// oldugunu belirsizlestirir; o durumda yalnizca pozisyonun seviyeleri cizilir.
+const PATTERN_LEVEL_ROLES = new Set([
+  'confirmation',
+  'entry_guide',
+  'stop_guide',
+  'take_profit_guide',
+  'target_1',
+  'target_2',
+]);
+
+function withoutPatternLevels(drawings: StrategyDrawing[]): StrategyDrawing[] {
+  return drawings.filter((drawing) => !PATTERN_LEVEL_ROLES.has(drawing.role ?? ''));
+}
+
+// Gecmis setup'larin kendi TP/SL seviyeleri ayni fiyat skalasinda ust uste
+// yigilir. Pozisyonun gecerli seviyeleri mum serisine fiyat cizgisi olarak tek
+// bir set halinde cizilir; burada yalnizca tarihsel risk cizimlerini ayikliyoruz.
+const HISTORICAL_RISK_LEVEL_ROLES = new Set([
+  'strategy_stop',
+  'strategy_target',
+]);
+
+function withoutHistoricalRiskLevels(drawings: StrategyDrawing[]): StrategyDrawing[] {
+  return drawings.filter((drawing) => !HISTORICAL_RISK_LEVEL_ROLES.has(drawing.role ?? ''));
+}
+
+/**
+ * Pozisyonu acan pattern'in cizim grubunu bulur. Pozisyon meta'sindaki
+ * pattern/direction/zigzag_length etiketiyle eslesen gruplardan D zamani en
+ * yakin olani secilir. Eslesme yoksa bos doner.
+ */
+function selectPositionPatternDrawings(
+  drawings: StrategyDrawing[],
+  position: { meta?: Record<string, unknown> } | null | undefined
+): StrategyDrawing[] {
+  if (!position || drawings.length === 0) return [];
+  const meta = position.meta ?? {};
+  const pattern = typeof meta.pattern === 'string' ? meta.pattern : '';
+  const direction = typeof meta.direction === 'string' ? meta.direction : '';
+  const length = Number(meta.zigzag_length);
+  const dTime = Number(meta.d_time);
+  if (!pattern || !direction || !Number.isFinite(length)) return [];
+
+  const labelText = `${direction} ${pattern} L${length}`;
+  const labels = drawings.filter((drawing): drawing is Extract<StrategyDrawing, { type: 'label' }> =>
+    drawing.type === 'label' && drawing.text === labelText && typeof drawing.group === 'string'
+  );
+  if (labels.length === 0) return [];
+
+  const selected = [...labels].sort((a, b) => {
+    if (!Number.isFinite(dTime)) return 0;
+    return Math.abs(Number(a.point.time) - dTime) - Math.abs(Number(b.point.time) - dTime);
+  })[0];
+  return selected?.group ? drawings.filter((drawing) => drawing.group === selected.group) : [];
+}
+
 export function Chart(): JSX.Element {
   const symbol = useAppStore((s) => s.symbol);
   const interval = useAppStore((s) => s.interval);
   const selectedBotId = useAppStore((s) => s.selectedBotId);
+  const selectedPaperPosition = useAppStore((s) => s.selectedPaperPosition);
   const drawingMode = useAppStore((s) => s.drawingMode);
   const activeIndicatorIds = useAppStore((s) => s.activeIndicatorIds);
   const setDrawingMode = useAppStore((s) => s.setDrawingMode);
   const { data: selectedBot } = useBot(selectedBotId);
+  const paperReports = useQuery({
+    queryKey: ['paper-portfolios'],
+    queryFn: () => paperPortfoliosApi.list(),
+    enabled: selectedPaperPosition !== null,
+    refetchInterval: selectedPaperPosition ? 15_000 : false,
+  });
+  const selectedPaperReport = paperReports.data?.find(
+    (report) => report.sourceFile === selectedPaperPosition?.sourceFile
+  );
+  const selectedPaperRaw = selectedPaperReport?.openPositions.find(
+    (position) => position.id === selectedPaperPosition?.positionId
+  );
+  const selectedPaperAsPosition = useMemo<Position | null>(() => {
+    if (
+      !selectedPaperRaw ||
+      selectedPaperRaw.symbol !== symbol ||
+      selectedPaperReport?.config.interval !== interval
+    ) {
+      return null;
+    }
+    return {
+      botId: `paper:${selectedPaperReport.sourceFile}`,
+      symbol: selectedPaperRaw.symbol,
+      side: selectedPaperRaw.side === 'long' ? 'BUY' : 'SELL',
+      quantity: selectedPaperRaw.qty ?? 0,
+      entryPrice: selectedPaperRaw.entry,
+      stopLossPrice: selectedPaperRaw.sl,
+      takeProfitPrice: selectedPaperRaw.tp,
+      meta: selectedPaperRaw.meta,
+      openedAt: selectedPaperRaw.entryTime ?? Date.parse(selectedPaperRaw.openedAtIso),
+    };
+  }, [interval, selectedPaperRaw, selectedPaperReport?.config.interval, selectedPaperReport?.sourceFile, symbol]);
   const selectedDrawings =
     selectedBot?.config.symbol === symbol && selectedBot.config.interval === interval
       ? selectedBot.state.drawings
       : undefined;
   const { data: candles } = useQuery({
     queryKey: ['klines', symbol, interval],
-    queryFn: () => marketApi.klines(symbol, interval, 500),
+    queryFn: () => marketApi.klines(symbol, interval, CHART_CANDLE_LIMIT),
     staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: true,
   });
   const activeIndicatorKey = activeIndicatorIds.join('|');
+  const paperStrategyFilename = selectedPaperReport?.config.strategyFile;
+  const paperStrategyDrawings = useQuery({
+    queryKey: [
+      'paper-strategy-drawings',
+      selectedPaperReport?.sourceFile,
+      paperStrategyFilename,
+      symbol,
+      interval,
+      candles?.at(-1)?.openTime,
+    ],
+    queryFn: () => strategiesApi
+      .draw(paperStrategyFilename!, { candles: candles ?? [] })
+      .then((result) => result.drawings),
+    enabled: Boolean(selectedPaperRaw && paperStrategyFilename && candles?.length),
+    staleTime: 30_000,
+  });
   const indicatorDrawings = useQuery({
     queryKey: ['indicator-drawings', symbol, interval, activeIndicatorKey, candles?.at(-1)?.openTime],
     queryFn: async () => {
@@ -159,20 +288,54 @@ export function Chart(): JSX.Element {
     enabled: Boolean(candles?.length && activeIndicatorIds.length > 0),
     staleTime: 10_000,
   });
+  const selectedPaperDrawings = useMemo(
+    () => selectPositionPatternDrawings(paperStrategyDrawings.data ?? [], selectedPaperRaw),
+    [paperStrategyDrawings.data, selectedPaperRaw]
+  );
+  // Baska bir sembole gecildiyse botun pozisyon seviyeleri bu grafige ait degildir.
+  const selectedBotPosition =
+    selectedBot?.config.symbol === symbol ? selectedBot.state.position ?? null : null;
+  const activePosition = selectedPaperAsPosition ?? selectedBotPosition;
   const visibleDrawings = useMemo(() => {
     if (drawingMode === 'hidden') return [];
     const botDrawings = selectedDrawings ?? [];
+    const paperDrawings = selectedPaperRaw ? selectedPaperDrawings : [];
     const activeIndicatorDrawings = activeIndicatorIds.length ? indicatorDrawings.data ?? [] : [];
-    if (drawingMode === 'all') return [...activeIndicatorDrawings, ...botDrawings];
-    const firstGrouped = botDrawings.find((drawing) => typeof drawing.group === 'string' && drawing.group);
+    // Acik pozisyon varken grafikteki tek Giris/SL/TP seti pozisyonun kendisidir
+    // (asagidaki fiyat cizgisi efekti); stratejinin tahmini seviyeleri gizlenir.
+    const hasOpenPosition = Boolean(activePosition || selectedPaperRaw);
+    const strategyView = (drawings: StrategyDrawing[]): StrategyDrawing[] => {
+      const cleaned = withoutHistoricalRiskLevels(drawings);
+      return hasOpenPosition ? withoutPatternLevels(cleaned) : cleaned;
+    };
+    if (drawingMode === 'all') {
+      return [
+        ...activeIndicatorDrawings,
+        ...strategyView(botDrawings),
+        ...strategyView(paperDrawings),
+      ];
+    }
+    // "Son" modunda pozisyonu acan pattern gosterilir; bulunamazsa en son pattern.
+    const botPositionDrawings = selectedBotPosition
+      ? selectPositionPatternDrawings(botDrawings, selectedBotPosition)
+      : [];
+    const strategyDrawings = paperDrawings.length
+      ? paperDrawings
+      : botPositionDrawings.length
+        ? botPositionDrawings
+        : botDrawings;
+    const firstGrouped = strategyDrawings.find((drawing) => typeof drawing.group === 'string' && drawing.group);
     if (firstGrouped?.group) {
       return [
         ...activeIndicatorDrawings,
-        ...botDrawings.filter((drawing) => drawing.group === firstGrouped.group),
+        ...strategyView(strategyDrawings.filter((drawing) => drawing.group === firstGrouped.group)),
       ];
     }
-    return [...activeIndicatorDrawings, ...botDrawings.slice(-10)];
-  }, [activeIndicatorIds.length, drawingMode, indicatorDrawings.data, selectedDrawings]);
+    return [
+      ...activeIndicatorDrawings,
+      ...strategyView(strategyDrawings.slice(-10)),
+    ];
+  }, [activeIndicatorIds.length, activePosition, drawingMode, indicatorDrawings.data, selectedBotPosition, selectedDrawings, selectedPaperDrawings, selectedPaperRaw]);
   const [overlayElements, setOverlayElements] = useState<OverlayElement[]>([]);
 
   // İki ayrı container — main (mum/volume/ema) ve sub (RSI)
@@ -193,6 +356,7 @@ export function Chart(): JSX.Element {
   const renderOverlayRef = useRef<() => void>(() => undefined);
   const overlayFrameRef = useRef<number | null>(null);
   const scheduleOverlayRenderRef = useRef<() => void>(() => undefined);
+  const lastAutoFitKeyRef = useRef<string | null>(null);
 
   renderOverlayRef.current = () => {
     const chart = mainChartRef.current;
@@ -202,13 +366,18 @@ export function Chart(): JSX.Element {
       return;
     }
 
+    // Sagdaki fiyat ekseni haric cizim alani genisligi.
+    const plotWidth = chart.timeScale().width();
+    // Acik pozisyonda Giris/SL/TP basliklari cizim alaninin sag kenarina yazilir;
+    // pattern etiketleri onlarin ustune binmesin diye o seridi bos birak.
+    const labelRightEdge = plotWidth - (activePosition ? 64 : 4);
     const timeScale = chart.timeScale() as {
       timeToCoordinate: (time: UTCTimestamp) => number | null;
     };
     const timeToX = (rawTime: number): number | null => {
       const chartTime = toChartTime(rawTime);
       const direct = timeScale.timeToCoordinate(chartTime);
-      const width = mainContainerRef.current?.clientWidth ?? 0;
+      const width = plotWidth;
       if (direct !== null) return clampOverlayX(Number(direct), width);
 
       const candles = candlesRef.current;
@@ -289,12 +458,24 @@ export function Chart(): JSX.Element {
       if (drawing.type === 'label') {
         const point = toCoord(drawing.point);
         if (!point) return;
+        const isUp = !String(drawing.style ?? '').toLowerCase().includes('down');
         const stackIndex = next.filter((el) =>
           el.kind === 'label' &&
           Math.abs(el.x - point.x) < 90 &&
           Math.abs(el.y - point.y) < 32 &&
-          el.isUp === !String(drawing.style ?? '').toLowerCase().includes('down')
+          el.isUp === isUp
         ).length;
+        const labelHeight = 22;
+        const candidateTop = isUp
+          ? point.y - labelHeight - 8 - stackIndex * (labelHeight + 4)
+          : point.y + 8 + stackIndex * (labelHeight + 4);
+        const oppositeCollisions = next.filter((el) => {
+          if (el.kind !== 'label' || el.isUp === isUp || Math.abs(el.x - point.x) >= 90) return false;
+          const existingTop = el.isUp
+            ? el.y - labelHeight - 8 - el.stackIndex * (labelHeight + 4)
+            : el.y + 8 + el.stackIndex * (labelHeight + 4);
+          return candidateTop < existingTop + labelHeight && candidateTop + labelHeight > existingTop;
+        }).length;
         next.push({
           kind: 'label',
           id: `label-${drawingIndex}`,
@@ -303,8 +484,10 @@ export function Chart(): JSX.Element {
           text: drawing.text ?? '',
           color: drawing.color ?? C.text,
           textColor: drawing.textcolor ?? C.bg,
-          isUp: !String(drawing.style ?? '').toLowerCase().includes('down'),
+          isUp,
           stackIndex,
+          xOffset: oppositeCollisions === 0 ? 0 : (isUp ? -64 : 64) * oppositeCollisions,
+          maxRight: labelRightEdge,
         });
       }
     });
@@ -480,6 +663,45 @@ export function Chart(): JSX.Element {
     };
   }, []);
 
+  /* ─── Açık pozisyonun Giriş / SL / TP seviyeleri ─────── */
+  // Mum serisine fiyat çizgisi olarak çizilir: çizgi tam o fiyatta durur,
+  // fiyatı sağdaki eksende, adı çizginin üstünde görünür. Overlay etiketleri
+  // yakın seviyelerde üst üste kaydırıldığı için hangi etiketin hangi çizgiye
+  // ait olduğu karışıyordu.
+  const positionEntry = activePosition?.entryPrice;
+  const positionTp = activePosition?.takeProfitPrice;
+  const positionSl = activePosition?.stopLossPrice;
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    if (!series || drawingMode === 'hidden') return;
+    const levels = [
+      { price: positionEntry, title: 'Giriş', color: '#cbd5e1', lineStyle: LineStyle.Dotted },
+      { price: positionTp, title: 'TP', color: '#22c55e', lineStyle: LineStyle.Dashed },
+      { price: positionSl, title: 'SL', color: '#ef4444', lineStyle: LineStyle.Dashed },
+    ];
+    const lines = levels.flatMap((level) =>
+      typeof level.price === 'number' && Number.isFinite(level.price)
+        ? [series.createPriceLine({
+            price: level.price,
+            color: level.color,
+            lineWidth: 2,
+            lineStyle: level.lineStyle,
+            axisLabelVisible: true,
+            title: level.title,
+          })]
+        : []
+    );
+    return () => {
+      for (const line of lines) {
+        try {
+          series.removePriceLine(line);
+        } catch {
+          /* chart zaten kaldırıldı */
+        }
+      }
+    };
+  }, [drawingMode, positionEntry, positionSl, positionTp]);
+
   /* ─── Tarihsel veri yükleme ──────────────────────────── */
   // Veriyi chart'a aktar
   useEffect(() => {
@@ -488,6 +710,13 @@ export function Chart(): JSX.Element {
 
     candlesRef.current = [...candles];
 
+    const precision = pricePrecisionFor(candles.at(-1)?.close);
+    candleSeriesRef.current.applyOptions({
+      priceFormat: { type: 'price', precision, minMove: 10 ** -precision },
+    });
+    emaSeriesRef.current.applyOptions({
+      priceFormat: { type: 'price', precision, minMove: 10 ** -precision },
+    });
     candleSeriesRef.current.setData(candles.map(toCandleData));
     volumeSeriesRef.current.setData(candles.map(toVolumeData));
 
@@ -520,14 +749,15 @@ export function Chart(): JSX.Element {
     }
     rsiSeriesRef.current.setData(rsiData);
 
-// Sembol/interval değişince son mumlara odaklan
-    if (candles.length > 0 && mainChartRef.current) {
+    const autoFitKey = `${symbol}:${interval}`;
+    if (candles.length > 0 && mainChartRef.current && lastAutoFitKeyRef.current !== autoFitKey) {
+      lastAutoFitKeyRef.current = autoFitKey;
       const ts = mainChartRef.current.timeScale();
       ts.fitContent();
       ts.scrollToRealTime();
     }
     renderOverlayRef.current();
-  }, [candles]);
+  }, [candles, interval, symbol]);
 
   /* ─── Canlı kline akışı ──────────────────────────────── */
   useEffect(() => {
@@ -555,7 +785,7 @@ export function Chart(): JSX.Element {
         buf[buf.length - 1] = candle;
       } else {
         buf.push(candle);
-        if (buf.length > 600) buf.shift();
+        if (buf.length > CHART_CANDLE_LIMIT) buf.shift();
       }
 
       // Chart serileri — Lightweight Charts'ın update() metodu hem yeni bar
@@ -628,7 +858,12 @@ export function Chart(): JSX.Element {
             }
             const labelWidth = Math.max(56, Math.min(220, el.text.length * 7 + 18));
             const labelHeight = 22;
-            const labelX = el.x - labelWidth / 2;
+            // Sag kenara yakin etiketler fiyat eksenine tasmasin diye sola kaydirilir.
+            const labelX = Math.max(
+              4,
+              Math.min(el.x + el.xOffset - labelWidth / 2, el.maxRight - labelWidth)
+            );
+            const labelCenterX = labelX + labelWidth / 2;
             const stackOffset = el.stackIndex * (labelHeight + 4);
             const labelY = el.isUp
               ? el.y - labelHeight - 8 - stackOffset
@@ -644,7 +879,7 @@ export function Chart(): JSX.Element {
                   fill={el.color}
                 />
                 <text
-                  x={el.x}
+                  x={labelCenterX}
                   y={labelY + 15}
                   fill={el.textColor}
                   textAnchor="middle"

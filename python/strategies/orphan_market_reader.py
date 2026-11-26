@@ -24,6 +24,7 @@ CACHE = {
 def initialize():
     return {
         "pivot_depths": [5, 8, 13],
+        "pivot_engine": "legacy",
         "allow_repaint": False,
         "max_scan_candles": 700,
         "recent_signal_bars": 1,
@@ -40,6 +41,12 @@ def initialize():
         "volume_period": 30,
         "ema_fast": 55,
         "ema_slow": 200,
+        "pivot_min_leg_pct": 0.0,
+        "pivot_min_leg_atr": 0.0,
+        "pivot_min_bar_depth_mult": 0.0,
+        "major_zigzag_dev_pct": 0.75,
+        "major_zigzag_atr_mult": 1.0,
+        "major_zigzag_bar_depth_mult": 0.75,
         "regime_filter": "soft",
         "min_interval_minutes": 30,
         "min_volume_ratio": 0.55,
@@ -59,7 +66,9 @@ def initialize():
         "abcd_extension_min": 1.13,
         "abcd_extension_max": 2.05,
         "qm_retest_tolerance_pct": 1.2,
+        "qm_stop_mode": "head",
         "wolfe_line_tolerance_pct": 1.8,
+        "wolfe_max_intersection_span_mult": 2.0,
         "flag_lookback": 42,
         "flag_pullback_bars": 14,
         "flag_min_pole_atr": 3.0,
@@ -147,6 +156,15 @@ def _config(config):
     cfg["volume_period"] = max(2, _to_int(cfg.get("volume_period"), 30))
     cfg["ema_fast"] = max(2, _to_int(cfg.get("ema_fast"), 55))
     cfg["ema_slow"] = max(cfg["ema_fast"] + 1, _to_int(cfg.get("ema_slow"), 200))
+    cfg["pivot_min_leg_pct"] = max(0.0, _to_float(cfg.get("pivot_min_leg_pct"), 0.0))
+    cfg["pivot_min_leg_atr"] = max(0.0, _to_float(cfg.get("pivot_min_leg_atr"), 0.0))
+    cfg["pivot_min_bar_depth_mult"] = max(0.0, _to_float(cfg.get("pivot_min_bar_depth_mult"), 0.0))
+    cfg["pivot_engine"] = str(cfg.get("pivot_engine") or "legacy").strip().lower()
+    if cfg["pivot_engine"] not in ("legacy", "major"):
+        cfg["pivot_engine"] = "legacy"
+    cfg["major_zigzag_dev_pct"] = max(0.0, _to_float(cfg.get("major_zigzag_dev_pct"), 0.75))
+    cfg["major_zigzag_atr_mult"] = max(0.0, _to_float(cfg.get("major_zigzag_atr_mult"), 1.0))
+    cfg["major_zigzag_bar_depth_mult"] = max(0.0, _to_float(cfg.get("major_zigzag_bar_depth_mult"), 0.75))
     cfg["regime_filter"] = str(cfg.get("regime_filter") or "soft").strip().lower()
     cfg["min_interval_minutes"] = max(0.0, _to_float(cfg.get("min_interval_minutes"), 30.0))
     cfg["min_volume_ratio"] = max(0.0, _to_float(cfg.get("min_volume_ratio"), 0.55))
@@ -166,7 +184,11 @@ def _config(config):
     cfg["abcd_extension_min"] = max(0.5, _to_float(cfg.get("abcd_extension_min"), 1.13))
     cfg["abcd_extension_max"] = max(cfg["abcd_extension_min"], _to_float(cfg.get("abcd_extension_max"), 2.05))
     cfg["qm_retest_tolerance_pct"] = max(0.05, _to_float(cfg.get("qm_retest_tolerance_pct"), 1.2))
+    cfg["qm_stop_mode"] = str(cfg.get("qm_stop_mode") or "head").strip().lower()
+    if cfg["qm_stop_mode"] not in ("head", "retest"):
+        cfg["qm_stop_mode"] = "head"
     cfg["wolfe_line_tolerance_pct"] = max(0.05, _to_float(cfg.get("wolfe_line_tolerance_pct"), 1.8))
+    cfg["wolfe_max_intersection_span_mult"] = max(1.0, _to_float(cfg.get("wolfe_max_intersection_span_mult"), 2.0))
     cfg["flag_lookback"] = max(15, _to_int(cfg.get("flag_lookback"), 42))
     cfg["flag_pullback_bars"] = max(5, _to_int(cfg.get("flag_pullback_bars"), 14))
     cfg["flag_min_pole_atr"] = max(0.5, _to_float(cfg.get("flag_min_pole_atr"), 3.0))
@@ -278,6 +300,13 @@ def _signature(candles, cfg):
         cfg["volume_period"],
         cfg["ema_fast"],
         cfg["ema_slow"],
+        cfg["pivot_min_leg_pct"],
+        cfg["pivot_min_leg_atr"],
+        cfg["pivot_min_bar_depth_mult"],
+        cfg["pivot_engine"],
+        cfg["major_zigzag_dev_pct"],
+        cfg["major_zigzag_atr_mult"],
+        cfg["major_zigzag_bar_depth_mult"],
         cfg["max_scan_candles"],
     )
 
@@ -312,8 +341,9 @@ def _series(candles, cfg):
     CACHE["atr"] = _atr(scan, cfg["atr_period"])
     CACHE["rsi"] = _rsi(closes, cfg["rsi_period"])
     CACHE["volume_ma"] = _sma(volumes, cfg["volume_period"])
+    builder = _build_major_zigzag_pivots if cfg["pivot_engine"] == "major" else _build_pivots
     CACHE["pivots"] = {
-        depth: _build_pivots(scan, depth, cfg["allow_repaint"], offset=len(candles) - len(scan))
+        depth: builder(scan, depth, cfg["allow_repaint"], offset=len(candles) - len(scan), cfg=cfg, atr_values=CACHE["atr"])
         for depth in cfg["pivot_depths"]
     }
     CACHE["count"] = len(candles)
@@ -328,27 +358,141 @@ def _series(candles, cfg):
     }
 
 
-def _build_pivots(candles, depth, allow_repaint=False, offset=0):
+def _build_pivots(candles, depth, allow_repaint=False, offset=0, cfg=None, atr_values=None):
     if len(candles) < depth * 2 + 1:
         return []
     pivots = []
     last_confirmed = len(candles) - 1 if allow_repaint else len(candles) - depth - 1
+    cfg = cfg or {}
+    min_bars = int(math.ceil(depth * _to_float(cfg.get("pivot_min_bar_depth_mult"), 0.0)))
     for i in range(depth, max(depth, last_confirmed) + 1):
         window = candles[i - depth:i + depth + 1]
         high = _to_float(candles[i].get("h"))
         low = _to_float(candles[i].get("l"))
         is_high = high >= max(_to_float(c.get("h")) for c in window)
         is_low = low <= min(_to_float(c.get("l")) for c in window)
+        atr_value = 0.0
+        if atr_values and i < len(atr_values):
+            atr_value = _to_float(atr_values[i], 0.0)
         if is_high and is_low:
             continue
         if is_high:
-            _push_pivot(pivots, {"i": i + offset, "t": candles[i].get("t"), "p": high, "type": "H"})
+            _push_pivot(
+                pivots,
+                {"i": i + offset, "t": candles[i].get("t"), "p": high, "type": "H"},
+                _pivot_min_move(high, atr_value, cfg),
+                min_bars,
+            )
         elif is_low:
-            _push_pivot(pivots, {"i": i + offset, "t": candles[i].get("t"), "p": low, "type": "L"})
+            _push_pivot(
+                pivots,
+                {"i": i + offset, "t": candles[i].get("t"), "p": low, "type": "L"},
+                _pivot_min_move(low, atr_value, cfg),
+                min_bars,
+            )
     return pivots
 
 
-def _push_pivot(pivots, pivot):
+def _build_major_zigzag_pivots(candles, depth, allow_repaint=False, offset=0, cfg=None, atr_values=None):
+    if len(candles) < depth * 2 + 1:
+        return []
+
+    cfg = cfg or {}
+    pivots = []
+    last_confirmed = len(candles) - 1 if allow_repaint else len(candles) - depth - 1
+    if last_confirmed < depth:
+        return []
+
+    min_bars = int(math.ceil(depth * _to_float(cfg.get("major_zigzag_bar_depth_mult"), 0.75)))
+    for i in range(depth, last_confirmed + 1):
+        left = max(0, i - depth)
+        right = min(len(candles), i + depth + 1)
+        window = candles[left:right]
+        high = _to_float(candles[i].get("h"))
+        low = _to_float(candles[i].get("l"))
+        is_high = high >= max(_to_float(c.get("h")) for c in window)
+        is_low = low <= min(_to_float(c.get("l")) for c in window)
+        if is_high and is_low:
+            _push_major_double_pivot(pivots, candles[i], i + offset, high, low, depth, cfg, atr_values, i, min_bars)
+            continue
+        if is_high:
+            _push_major_pivot(
+                pivots,
+                {"i": i + offset, "t": candles[i].get("t"), "p": high, "type": "H"},
+                _major_min_move(high, atr_values, i, cfg),
+                min_bars,
+            )
+        elif is_low:
+            _push_major_pivot(
+                pivots,
+                {"i": i + offset, "t": candles[i].get("t"), "p": low, "type": "L"},
+                _major_min_move(low, atr_values, i, cfg),
+                min_bars,
+            )
+    return pivots
+
+
+def _push_major_double_pivot(pivots, candle, index, high, low, depth, cfg, atr_values, local_i, min_bars):
+    open_price = _to_float(candle.get("o"), _to_float(candle.get("c")))
+    close_price = _to_float(candle.get("c"), open_price)
+    if close_price >= open_price:
+        ordered = (
+            {"i": index, "t": candle.get("t"), "p": low, "type": "L"},
+            {"i": index, "t": candle.get("t"), "p": high, "type": "H"},
+        )
+    else:
+        ordered = (
+            {"i": index, "t": candle.get("t"), "p": high, "type": "H"},
+            {"i": index, "t": candle.get("t"), "p": low, "type": "L"},
+        )
+    for order_index, pivot in enumerate(ordered):
+        _push_major_pivot(
+            pivots,
+            pivot,
+            _major_min_move(pivot["p"], atr_values, local_i, cfg),
+            min_bars if order_index == 0 else 0,
+        )
+
+
+def _major_min_move(price, atr_values, index, cfg):
+    dev_move = abs(price) * _to_float(cfg.get("major_zigzag_dev_pct"), 0.75) / 100.0
+    atr_value = 0.0
+    if atr_values and index < len(atr_values):
+        atr_value = _to_float(atr_values[index], 0.0)
+    atr_move = atr_value * _to_float(cfg.get("major_zigzag_atr_mult"), 1.0)
+    return max(dev_move, atr_move)
+
+
+def _push_major_pivot(pivots, pivot, min_move=0.0, min_bars=0):
+    if not pivots:
+        pivots.append(pivot)
+        return
+
+    last = pivots[-1]
+    if last["type"] == pivot["type"]:
+        if pivot["type"] == "H" and pivot["p"] >= last["p"]:
+            pivots[-1] = pivot
+        elif pivot["type"] == "L" and pivot["p"] <= last["p"]:
+            pivots[-1] = pivot
+        return
+
+    move = abs(pivot["p"] - last["p"])
+    bars = abs(int(pivot["i"]) - int(last["i"]))
+    if min_move > 0 and move < min_move:
+        return
+    if min_bars > 0 and bars < min_bars:
+        return
+
+    pivots.append(pivot)
+
+
+def _pivot_min_move(price, atr_value, cfg):
+    pct_move = abs(price) * _to_float(cfg.get("pivot_min_leg_pct"), 0.0) / 100.0
+    atr_move = _to_float(atr_value, 0.0) * _to_float(cfg.get("pivot_min_leg_atr"), 0.0)
+    return max(pct_move, atr_move)
+
+
+def _push_pivot(pivots, pivot, min_move=0.0, min_bars=0):
     if not pivots:
         pivots.append(pivot)
         return
@@ -358,6 +502,12 @@ def _push_pivot(pivots, pivot):
             pivots[-1] = pivot
         elif pivot["type"] == "L" and pivot["p"] <= last["p"]:
             pivots[-1] = pivot
+        return
+    move = abs(pivot["p"] - last["p"])
+    bars = abs(int(pivot["i"]) - int(last["i"]))
+    if min_move > 0 and move < min_move:
+        return
+    if min_bars > 0 and bars < min_bars and move < min_move * 1.6:
         return
     pivots.append(pivot)
 
@@ -381,6 +531,43 @@ def _line_price(p1, p2, index):
         return p2["p"]
     slope = (p2["p"] - p1["p"]) / float(p2["i"] - p1["i"])
     return p1["p"] + slope * (index - p1["i"])
+
+
+def _line_intersection(p1, p2, p3, p4):
+    if p1["i"] == p2["i"] or p3["i"] == p4["i"]:
+        return None
+    slope_a = (p2["p"] - p1["p"]) / float(p2["i"] - p1["i"])
+    slope_b = (p4["p"] - p3["p"]) / float(p4["i"] - p3["i"])
+    if abs(slope_a - slope_b) <= 1e-12:
+        return None
+    intercept_a = p1["p"] - slope_a * p1["i"]
+    intercept_b = p3["p"] - slope_b * p3["i"]
+    index = (intercept_b - intercept_a) / (slope_a - slope_b)
+    price = slope_a * index + intercept_a
+    return {"i": index, "p": price}
+
+
+def _wolfe_intersection(p1, p2, p3, p4, p5, cfg):
+    intersection = _line_intersection(p1, p3, p2, p4)
+    if intersection is None:
+        return None
+    span = max(1.0, float(p5["i"] - p1["i"]))
+    max_index = p1["i"] + span * cfg["wolfe_max_intersection_span_mult"]
+    if intersection["i"] <= p5["i"] or intersection["i"] > max_index:
+        return None
+
+    t1 = _to_float(p1.get("t"), None)
+    t5 = _to_float(p5.get("t"), None)
+    if t1 is not None and t5 is not None and p5["i"] != p1["i"]:
+        ms_per_bar = (t5 - t1) / float(p5["i"] - p1["i"])
+        intersection_time = t1 + ms_per_bar * (intersection["i"] - p1["i"])
+        max_time = t1 + (t5 - t1) * cfg["wolfe_max_intersection_span_mult"]
+        if intersection_time <= t5 or intersection_time > max_time:
+            return None
+        intersection["t"] = intersection_time
+
+    intersection["span_ratio"] = (intersection["i"] - p1["i"]) / span
+    return intersection
 
 
 def _retracement(a, b, c):
@@ -549,9 +736,12 @@ def _detect_qm(candles, pivots, depth, cfg, series):
                 score,
                 p5["i"] + depth,
                 [p4["p"], p2["p"]],
-                min(p3["p"], p5["p"]),
+                p5["p"] if cfg["qm_stop_mode"] == "retest" else min(p3["p"], p5["p"]),
                 "3 noktasi 1 altinda, 4 noktasi 2 ustunde, 5 tekrar 1 bolgesinde",
-                {"retest_pct": round(_pct(p5["p"], p1["p"]), 4)},
+                {
+                    "retest_pct": round(_pct(p5["p"], p1["p"]), 4),
+                    "stop_mode": cfg["qm_stop_mode"],
+                },
             ))
     elif types == ["H", "L", "H", "L", "H"]:
         retest_ok = _near(p5["p"], p1["p"], cfg["qm_retest_tolerance_pct"]) or p5["p"] > p1["p"]
@@ -566,9 +756,12 @@ def _detect_qm(candles, pivots, depth, cfg, series):
                 score,
                 p5["i"] + depth,
                 [p4["p"], p2["p"]],
-                max(p3["p"], p5["p"]),
+                p5["p"] if cfg["qm_stop_mode"] == "retest" else max(p3["p"], p5["p"]),
                 "3 noktasi 1 ustunde, 4 noktasi 2 altinda, 5 tekrar 1 bolgesinde",
-                {"retest_pct": round(_pct(p5["p"], p1["p"]), 4)},
+                {
+                    "retest_pct": round(_pct(p5["p"], p1["p"]), 4),
+                    "stop_mode": cfg["qm_stop_mode"],
+                },
             ))
     return out
 
@@ -581,9 +774,10 @@ def _detect_wolfe(candles, pivots, depth, cfg, series):
     out = []
     if types == ["H", "L", "H", "L", "H"]:
         line_13 = _line_price(p1, p3, p5["i"])
+        intersection = _wolfe_intersection(p1, p2, p3, p4, p5, cfg)
         p4_inside = min(p1["p"], p2["p"]) <= p4["p"] <= max(p1["p"], p2["p"])
         near_line = _pct(p5["p"], line_13) <= cfg["wolfe_line_tolerance_pct"]
-        if p3["p"] > p1["p"] and p5["p"] >= p3["p"] and p4_inside and near_line:
+        if intersection and p3["p"] > p1["p"] and p5["p"] >= p3["p"] and p4_inside and near_line:
             score = 70 + max(0, 8 - _pct(p5["p"], line_13)) + (6 if _bearish_divergence(p3, p5, candles, series) else 0)
             out.append(_base_candidate(
                 "Wolfe",
@@ -594,14 +788,21 @@ def _detect_wolfe(candles, pivots, depth, cfg, series):
                 p5["i"] + depth,
                 [p4["p"], _line_price(p1, p4, len(candles) - 1)],
                 p5["p"],
-                "5 dalga, 3 > 1, 4 1-2 araliginda, 5 1-3 cizgisine tasiyor",
-                {"line_13_error_pct": round(_pct(p5["p"], line_13), 4)},
+                "5 dalga, 1-3 ve 2-4 cizgileri 1-5 suresinin en fazla 2 kati icinde kesisiyor",
+                {
+                    "line_13_error_pct": round(_pct(p5["p"], line_13), 4),
+                    "intersection_i": round(intersection["i"], 4),
+                    "intersection_price": round(intersection["p"], 8),
+                    "intersection_time": int(intersection["t"]) if intersection.get("t") is not None else None,
+                    "intersection_span_ratio": round(intersection["span_ratio"], 4),
+                },
             ))
     elif types == ["L", "H", "L", "H", "L"]:
         line_13 = _line_price(p1, p3, p5["i"])
+        intersection = _wolfe_intersection(p1, p2, p3, p4, p5, cfg)
         p4_inside = min(p1["p"], p2["p"]) <= p4["p"] <= max(p1["p"], p2["p"])
         near_line = _pct(p5["p"], line_13) <= cfg["wolfe_line_tolerance_pct"]
-        if p3["p"] < p1["p"] and p5["p"] <= p3["p"] and p4_inside and near_line:
+        if intersection and p3["p"] < p1["p"] and p5["p"] <= p3["p"] and p4_inside and near_line:
             score = 70 + max(0, 8 - _pct(p5["p"], line_13)) + (6 if _bullish_divergence(p3, p5, candles, series) else 0)
             out.append(_base_candidate(
                 "Wolfe",
@@ -612,8 +813,14 @@ def _detect_wolfe(candles, pivots, depth, cfg, series):
                 p5["i"] + depth,
                 [p4["p"], _line_price(p1, p4, len(candles) - 1)],
                 p5["p"],
-                "5 dalga, 3 < 1, 4 1-2 araliginda, 5 1-3 cizgisine tasiyor",
-                {"line_13_error_pct": round(_pct(p5["p"], line_13), 4)},
+                "5 dalga, 1-3 ve 2-4 cizgileri 1-5 suresinin en fazla 2 kati icinde kesisiyor",
+                {
+                    "line_13_error_pct": round(_pct(p5["p"], line_13), 4),
+                    "intersection_i": round(intersection["i"], 4),
+                    "intersection_price": round(intersection["p"], 8),
+                    "intersection_time": int(intersection["t"]) if intersection.get("t") is not None else None,
+                    "intersection_span_ratio": round(intersection["span_ratio"], 4),
+                },
             ))
     return out
 

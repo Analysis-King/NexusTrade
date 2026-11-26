@@ -4,7 +4,7 @@ import { intervalToMs, klineToCandle } from './binance/marketData.js';
 import { getStrategyService } from './strategies.js';
 import { getStorage } from '../storage/index.js';
 import { candleToRaw } from '../workers/types.js';
-import { getWorkerPool } from '../workers/pool.js';
+import { getJobWorkerPool as getWorkerPool } from '../workers/pool.js';
 import { ValidationError } from '../utils/errors.js';
 import type { Candle, Interval } from '../types/domain.js';
 import type {

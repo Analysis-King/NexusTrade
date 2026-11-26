@@ -7,6 +7,7 @@ import type {
   BotConfig,
   BotSnapshot,
   Candle,
+  StrategyDrawing,
   Interval,
   OrderBook,
   RecentTrade,
@@ -29,7 +30,7 @@ export const marketApi = {
     api.get<OrderBook>(`/market/orderbook/${symbol}?limit=${limit}`),
   recentTrades: (symbol: string, limit = 50) =>
     api.get<RecentTrade[]>(`/market/trades/${symbol}?limit=${limit}`),
-  klines: (symbol: string, interval: Interval, limit = 500) =>
+  klines: (symbol: string, interval: Interval, limit = 5000) =>
     api.get<Candle[]>(`/market/klines/${symbol}?interval=${interval}&limit=${limit}`),
 };
 
@@ -54,61 +55,8 @@ export interface CreateBotInput {
   }>;
 }
 
-export interface ProfileGateDraft {
-  profile: string;
-  weightPct: number;
-  expectedDailyPct: number | null;
-  bot: CreateBotInput;
-}
-
-export interface ProfileGateStatus {
-  source: string;
-  generatedAt: string | null;
-  allocation: {
-    strategy: string;
-    plan: string;
-    leverage?: number | null;
-    max_position_pct?: number | null;
-    expectedDailyPct?: number | null;
-    walkForwardAvgDailyPct?: number | null;
-    walkForwardMedianDailyPct?: number | null;
-    walkForwardWorstDailyPct?: number | null;
-    profiles: Array<{
-      symbol: string;
-      interval: Interval;
-      capital_weight_pct: number;
-      latest_daily_pct?: number | null;
-    }>;
-  };
-  drafts: ProfileGateDraft[];
-}
-
-export interface DeployProfileGateInput {
-  capitalUsd?: number;
-  mode?: 'paper' | 'live';
-  prefix?: string;
-  maxLossPct?: number;
-  takeProfitPct?: number;
-  dailyMaxLossPct?: number;
-  stopLossMode?: 'percent' | 'target_ratio' | 'strategy';
-  stopLossTargetRatio?: number;
-  leverage?: number;
-  start?: boolean;
-}
-
-export interface ProfileGateDeployResult {
-  gate: ProfileGateStatus;
-  drafts: ProfileGateDraft[];
-  created: Array<{ profile: string; bot: BotConfig }>;
-  skipped: Array<{ profile: string; reason: 'exists'; bot: BotConfig }>;
-  started: boolean;
-}
-
 export const botsApi = {
   list:    () => api.get<BotConfig[]>('/bots'),
-  profileGate: () => api.get<ProfileGateStatus>('/bots/profile-gate'),
-  deployProfileGate: (input: DeployProfileGateInput) =>
-    api.post<ProfileGateDeployResult>('/bots/profile-gate/deploy', input),
   get:     (id: string) => api.get<BotSnapshot>(`/bots/${id}`),
   create:  (input: CreateBotInput) => api.post<BotConfig>('/bots', input),
   update:  (id: string, patch: Partial<CreateBotInput>) =>
@@ -120,6 +68,14 @@ export const botsApi = {
   resume:  (id: string) => api.post<BotSnapshot>(`/bots/${id}/resume`),
   trades:  (id: string, limit = 50) =>
     api.get<Trade[]>(`/bots/${id}/trades?limit=${limit}`),
+};
+
+export const paperPortfoliosApi = {
+  list: () => api.get<import('@/types/api').PaperPortfolioReport[]>('/paper-portfolios'),
+  stop: (sourceFile: string) =>
+    api.post<{ queued: boolean }>(`/paper-portfolios/${encodeURIComponent(sourceFile)}/stop`),
+  extend: (sourceFile: string, days: number) =>
+    api.post<{ queued: boolean }>(`/paper-portfolios/${encodeURIComponent(sourceFile)}/extend`, { days }),
 };
 
 /* ─── Strategies ───────────────────────────────────────── */
@@ -152,6 +108,11 @@ export const strategiesApi = {
   save: (filename: string, code: string) => api.post<StrategyMeta>('/strategies', { filename, code }),
   validate: (filename: string, code: string) =>
     api.post<StrategyValidation>('/strategies/validate', { filename, code }),
+  draw: (filename: string, input: { candles: Candle[]; params?: Record<string, unknown> }) =>
+    api.post<{ drawings: StrategyDrawing[] }>(
+      `/strategies/${encodeURIComponent(filename)}/draw`,
+      input
+    ),
 };
 
 export interface IndicatorMeta {

@@ -8,6 +8,14 @@ export function formatPrice(n: number | string): string {
   return x.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
 }
 
+/** Dolar tutarı — işaretli: +$12.40, -$165.12, $0.00. */
+export function formatSignedUsd(n: number | string): string {
+  const x = typeof n === 'string' ? Number(n) : n;
+  if (!Number.isFinite(x)) return '–';
+  const sign = x > 0 ? '+' : x < 0 ? '-' : '';
+  return `${sign}$${formatPrice(Math.abs(x))}`;
+}
+
 /** % değişim — işaretli, 2 ondalık. */
 export function formatPct(n: number | string): string {
   const x = typeof n === 'string' ? Number(n) : n;

@@ -9,7 +9,7 @@ import path from 'node:path';
 import type { BotConfig } from '../../types/domain.js';
 import type { BotStore } from '../types.js';
 import { ConflictError, NotFoundError } from '../../utils/errors.js';
-import { readJson, writeJson } from './atomicFile.js';
+import { readJson, updateJson } from './atomicFile.js';
 
 interface BotsFile {
   version: 1;
@@ -24,11 +24,12 @@ export class JsonBotStore implements BotStore {
   }
 
   private async readAll(): Promise<BotsFile> {
-    return readJson<BotsFile>(this.filePath, { version: 1, bots: [] });
+    return readJson<BotsFile>(this.filePath, emptyFile());
   }
 
-  private async writeAll(data: BotsFile): Promise<void> {
-    await writeJson(this.filePath, data);
+  /** Oku-degistir-yaz tek kilit altinda (lost update olmasin). */
+  private mutate<R>(fn: (data: BotsFile) => R): Promise<R> {
+    return updateJson<BotsFile, R>(this.filePath, emptyFile(), fn);
   }
 
   async list(): Promise<BotConfig[]> {
@@ -42,35 +43,39 @@ export class JsonBotStore implements BotStore {
   }
 
   async create(bot: BotConfig): Promise<BotConfig> {
-    const data = await this.readAll();
-    if (data.bots.some((b) => b.id === bot.id)) {
-      throw new ConflictError(`Bot zaten var: ${bot.id}`);
-    }
-    data.bots.push(bot);
-    await this.writeAll(data);
-    return bot;
+    return this.mutate((data) => {
+      if (data.bots.some((b) => b.id === bot.id)) {
+        throw new ConflictError(`Bot zaten var: ${bot.id}`);
+      }
+      data.bots.push(bot);
+      return bot;
+    });
   }
 
   async update(id: string, patch: Partial<BotConfig>): Promise<BotConfig> {
-    const data = await this.readAll();
-    const idx = data.bots.findIndex((b) => b.id === id);
-    if (idx === -1) throw new NotFoundError(`Bot ${id}`);
-    const updated: BotConfig = {
-      ...data.bots[idx]!,
-      ...patch,
-      id, // ID değiştirilemez
-      updatedAt: Date.now(),
-    };
-    data.bots[idx] = updated;
-    await this.writeAll(data);
-    return updated;
+    return this.mutate((data) => {
+      const idx = data.bots.findIndex((b) => b.id === id);
+      if (idx === -1) throw new NotFoundError(`Bot ${id}`);
+      const updated: BotConfig = {
+        ...data.bots[idx]!,
+        ...patch,
+        id, // ID degistirilemez
+        updatedAt: Date.now(),
+      };
+      data.bots[idx] = updated;
+      return updated;
+    });
   }
 
   async delete(id: string): Promise<void> {
-    const data = await this.readAll();
-    const before = data.bots.length;
-    data.bots = data.bots.filter((b) => b.id !== id);
-    if (data.bots.length === before) throw new NotFoundError(`Bot ${id}`);
-    await this.writeAll(data);
+    await this.mutate((data) => {
+      const before = data.bots.length;
+      data.bots = data.bots.filter((b) => b.id !== id);
+      if (data.bots.length === before) throw new NotFoundError(`Bot ${id}`);
+    });
   }
+}
+
+function emptyFile(): BotsFile {
+  return { version: 1, bots: [] };
 }

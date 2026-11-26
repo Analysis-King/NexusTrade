@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
+import { ApiError } from './api/http';
 import { ws } from './api/ws';
 import './styles/globals.css';
 
@@ -11,7 +12,12 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 5_000,
       refetchOnWindowFocus: false,
-      retry: 1,
+      // 4xx (silinmis bot 404, hiz limiti 429) tekrar denemekle duzelmez;
+      // yalnizca ag/sunucu hatalarinda bir kez daha dene.
+      retry: (failureCount, error) => {
+        if (error instanceof ApiError && error.status >= 400 && error.status < 500) return false;
+        return failureCount < 1;
+      },
     },
   },
 });

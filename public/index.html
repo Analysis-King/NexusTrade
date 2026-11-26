@@ -24,7 +24,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);fon
 body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,229,160,0.006) 2px,rgba(0,229,160,0.006) 4px);pointer-events:none;z-index:9999}
 
 /* ── LAYOUT ── */
-#app{display:grid;grid-template-rows:40px 1fr 34px;grid-template-columns:190px 1fr 290px;height:100vh}
+#app{display:grid;grid-template-rows:40px 1fr 34px;grid-template-columns:190px minmax(0,1fr) 7px var(--right-panel-width,290px);height:100vh}
 
 /* ── TOPBAR ── */
 #topbar{grid-column:1/-1;grid-row:1;display:flex;align-items:center;background:var(--bg1);border-bottom:1px solid var(--border);position:relative;z-index:100}
@@ -117,7 +117,12 @@ body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradi
 .tt-l{color:var(--text3)}.tt-v{font-weight:600}
 
 /* ── RIGHT PANEL ── */
-#right{grid-column:3;grid-row:2;background:var(--bg1);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#right-resizer{grid-column:3;grid-row:2;background:var(--bg);cursor:col-resize;position:relative;touch-action:none;z-index:40}
+#right-resizer::before{content:'';position:absolute;top:0;bottom:0;left:3px;width:1px;background:var(--border);transition:background .12s,box-shadow .12s}
+#right-resizer:hover::before,#right-resizer.active::before{background:var(--blue);box-shadow:0 0 8px rgba(43,106,255,.45)}
+#right-resizer::after{content:'';position:absolute;inset:0;background:rgba(43,106,255,0);transition:background .12s}
+#right-resizer:hover::after,#right-resizer.active::after{background:rgba(43,106,255,.08)}
+#right{grid-column:4;grid-row:2;background:var(--bg1);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
 .rp-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto}
 .rp-tabs::-webkit-scrollbar{height:0}
 .rpt{flex-shrink:0;padding:8px 10px;font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
@@ -723,6 +728,8 @@ body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradi
       </div>
     </div>
   </div>
+
+  <div id="right-resizer" title="Paneli genislet veya daralt" role="separator" aria-orientation="vertical" aria-label="Sag panel genisligi"></div>
 
   <!-- RIGHT PANEL -->
   <div id="right">
@@ -2898,7 +2905,55 @@ function startClock(){setInterval(()=>{document.getElementById('clock').textCont
 // ══════════════════════════════════════════════════════
 //  RESIZE
 // ══════════════════════════════════════════════════════
-window.addEventListener('resize',renderChart);
+const RIGHT_PANEL_WIDTH_KEY='nexustrade.rightPanelWidth';
+const RIGHT_PANEL_MIN=250;
+const RIGHT_PANEL_MAX=760;
+function clampRightPanelWidth(width){
+  const viewportMax=Math.min(RIGHT_PANEL_MAX,Math.max(RIGHT_PANEL_MIN,window.innerWidth-430));
+  const normalized=Number.isFinite(width)?width:290;
+  return Math.min(viewportMax,Math.max(RIGHT_PANEL_MIN,normalized));
+}
+function currentRightPanelWidth(){
+  const app=document.getElementById('app');
+  const raw=app?getComputedStyle(app).getPropertyValue('--right-panel-width'):'';
+  return Number(String(raw).replace('px',''))||290;
+}
+function setRightPanelWidth(width){
+  const next=clampRightPanelWidth(width);
+  document.getElementById('app')?.style.setProperty('--right-panel-width',next+'px');
+  try{localStorage.setItem(RIGHT_PANEL_WIDTH_KEY,String(Math.round(next)));}catch(e){}
+  return next;
+}
+function initRightPanelResize(){
+  const handle=document.getElementById('right-resizer');
+  if(!handle||handle.dataset.ready)return;
+  handle.dataset.ready='1';
+  setRightPanelWidth(Number(localStorage.getItem(RIGHT_PANEL_WIDTH_KEY))||290);
+  handle.addEventListener('pointerdown',e=>{
+    e.preventDefault();
+    const startX=e.clientX;
+    const startW=currentRightPanelWidth();
+    const oldCursor=document.body.style.cursor;
+    const oldSelect=document.body.style.userSelect;
+    document.body.style.cursor='col-resize';
+    document.body.style.userSelect='none';
+    handle.classList.add('active');
+    const move=ev=>{setRightPanelWidth(startW+startX-ev.clientX);renderChart();};
+    const stop=()=>{
+      window.removeEventListener('pointermove',move);
+      window.removeEventListener('pointerup',stop);
+      window.removeEventListener('pointercancel',stop);
+      document.body.style.cursor=oldCursor;
+      document.body.style.userSelect=oldSelect;
+      handle.classList.remove('active');
+      renderChart();
+    };
+    window.addEventListener('pointermove',move);
+    window.addEventListener('pointerup',stop);
+    window.addEventListener('pointercancel',stop);
+  });
+}
+window.addEventListener('resize',()=>{setRightPanelWidth(currentRightPanelWidth());renderChart();});
 
 // ══════════════════════════════════════════════════════
 //  BOOT SEQUENCE
@@ -2917,7 +2972,7 @@ const BOOT_STEPS=[
   for(const[pct,msg]of BOOT_STEPS){bar.style.width=pct+'%';st.textContent=msg;await new Promise(r=>setTimeout(r,320));}
 
   // Build UI
-  buildTicker();buildSidebar();buildPortfolio();buildHistory();loadNews();
+  buildTicker();buildSidebar();buildPortfolio();buildHistory();loadNews();initRightPanelResize();
   Object.entries(S.indicators).forEach(([k,v])=>document.getElementById('indb-'+k)?.classList.toggle('active',v));
   startClock();
 

@@ -28,6 +28,7 @@ except Exception:
 LAST_SIGNAL_KEY = None
 OBSERVED_KEYS = set()
 ACTIVE_TRADE = None
+PENDING_ENTRIES = {}
 LEARNING_STATE = {
     "seen": set(),
     "open": [],
@@ -88,7 +89,14 @@ def initialize():
         "wait_for_confirmation": False,
         "recent_signal_bars": 8,
         "min_quality": 0,
+        "min_target_pct": 0.0,
+        "max_target_pct": 0.0,
         "allow_short": True,
+        "entry_confirmation_mode": "off",
+        "entry_confirmation_fraction": 0.1,
+        "entry_confirmation_bars": 8,
+        "max_pending_entries": 20,
+        "exit_on_opposite_pattern": False,
         "max_scan_candles": 1800,
         "max_draw_patterns": 20,
         "draw_historical_patterns": True,
@@ -97,7 +105,7 @@ def initialize():
         "enable_double_top_bottom": False,
         "take_profit_mode": "target_1",
         "stop_loss_mode": "target_risk",
-        "stop_loss_target_ratio": 1.0,
+        "stop_loss_target_ratio": 0.2,
         "min_reward_risk": 0.75,
         "exit_mode": "single",
         "trail_trigger_mode": "target_1",
@@ -127,6 +135,9 @@ def initialize():
         "ema_slope_period": 100,
         "min_ema_slope_pct": 0.0,
         "dema_filter": "off",
+        "collect_market_context": False,
+        "collect_htf_context": False,
+        "collect_dema_context": False,
         "dema_fast_period": 20,
         "dema_slow_period": 30,
         "dema_source": "close",
@@ -154,6 +165,7 @@ def initialize():
         "learning_min_win_rate": 55.0,
         "learning_min_expectancy_r": 0.0,
         "learning_horizon_bars": 96,
+        "learning_window_samples": 0,
         "learning_max_open": 300,
     }
 
@@ -248,6 +260,17 @@ def _cfg(config):
     merged["max_pivot_size"] = max(6, _to_int(merged.get("max_pivot_size"), 100))
     merged["recent_signal_bars"] = max(0, _to_int(merged.get("recent_signal_bars"), 8))
     merged["min_quality"] = max(0, _to_float(merged.get("min_quality"), 0))
+    merged["min_target_pct"] = max(0.0, _to_float(merged.get("min_target_pct"), 0.0))
+    merged["max_target_pct"] = max(0.0, _to_float(merged.get("max_target_pct"), 0.0))
+    merged["entry_confirmation_mode"] = str(merged.get("entry_confirmation_mode") or "off").strip().lower()
+    if merged["entry_confirmation_mode"] not in ("off", "target_fraction"):
+        merged["entry_confirmation_mode"] = "off"
+    merged["entry_confirmation_fraction"] = min(
+        0.9,
+        max(0.0, _to_float(merged.get("entry_confirmation_fraction"), 0.1)),
+    )
+    merged["entry_confirmation_bars"] = max(1, _to_int(merged.get("entry_confirmation_bars"), 8))
+    merged["max_pending_entries"] = max(1, _to_int(merged.get("max_pending_entries"), 20))
     merged["max_scan_candles"] = max(100, _to_int(merged.get("max_scan_candles"), 1800))
     merged["max_draw_patterns"] = max(0, _to_int(merged.get("max_draw_patterns"), 20))
     merged["draw_historical_patterns"] = _as_bool(merged.get("draw_historical_patterns"), True)
@@ -255,7 +278,8 @@ def _cfg(config):
     merged["max_risk_per_reward"] = _to_float(merged.get("max_risk_per_reward"), 40.0)
     merged["take_profit_mode"] = str(merged.get("take_profit_mode") or "target_1").strip().lower()
     merged["stop_loss_mode"] = str(merged.get("stop_loss_mode") or "target_risk").strip().lower()
-    merged["stop_loss_target_ratio"] = max(0.1, _to_float(merged.get("stop_loss_target_ratio"), 1.0))
+    merged["stop_loss_target_ratio"] = max(0.1, _to_float(merged.get("stop_loss_target_ratio"), 0.2))
+    merged["min_reward_risk"] = max(0.0, _to_float(merged.get("min_reward_risk"), 0.75))
     merged["exit_mode"] = str(merged.get("exit_mode") or "single").strip().lower()
     if merged["exit_mode"] not in ("single", "tp2_trail", "target_trail"):
         merged["exit_mode"] = "single"
@@ -290,6 +314,9 @@ def _cfg(config):
     merged["ema_slope_period"] = max(2, _to_int(merged.get("ema_slope_period"), 100))
     merged["min_ema_slope_pct"] = max(0.0, _to_float(merged.get("min_ema_slope_pct"), 0.0))
     merged["dema_filter"] = str(merged.get("dema_filter") or "off").strip().lower()
+    merged["collect_market_context"] = _as_bool(merged.get("collect_market_context"), False)
+    merged["collect_htf_context"] = _as_bool(merged.get("collect_htf_context"), False)
+    merged["collect_dema_context"] = _as_bool(merged.get("collect_dema_context"), False)
     if merged["dema_filter"] == "trend":
         merged["dema_filter"] = "with_trend"
     if merged["dema_filter"] not in ("off", "with_trend", "reversal"):
@@ -347,6 +374,7 @@ def _cfg(config):
     merged["learning_min_win_rate"] = max(0.0, _to_float(merged.get("learning_min_win_rate"), 55.0))
     merged["learning_min_expectancy_r"] = _to_float(merged.get("learning_min_expectancy_r"), 0.0)
     merged["learning_horizon_bars"] = max(1, _to_int(merged.get("learning_horizon_bars"), 96))
+    merged["learning_window_samples"] = max(0, _to_int(merged.get("learning_window_samples"), 0))
     merged["learning_max_open"] = max(20, _to_int(merged.get("learning_max_open"), 300))
     config_has_allow_repaint = isinstance(config, dict) and "allow_repaint" in config
     if config_has_allow_repaint:
@@ -356,6 +384,7 @@ def _cfg(config):
         merged["wait_for_confirmation"] = _as_bool(merged.get("wait_for_confirmation"), False)
         merged["allow_repaint"] = not merged["wait_for_confirmation"]
     merged["allow_short"] = _as_bool(merged.get("allow_short"), True)
+    merged["exit_on_opposite_pattern"] = _as_bool(merged.get("exit_on_opposite_pattern"), False)
     return merged
 
 
@@ -585,7 +614,11 @@ def _dema_series(values, period):
 
 
 def _dema_context(candles, cfg):
-    if cfg.get("dema_filter") == "off":
+    if (
+        cfg.get("dema_filter") == "off"
+        and not cfg.get("collect_market_context")
+        and not cfg.get("collect_dema_context")
+    ):
         return {}
     fast_period = cfg.get("dema_fast_period", 20)
     slow_period = cfg.get("dema_slow_period", 30)
@@ -674,10 +707,16 @@ def _aggregate_completed_htf(candles, timeframe_ms):
 
 def _htf_regime(candles, cfg):
     timeframe_ms = _timeframe_ms(cfg.get("htf_timeframe", "4h"))
-    groups = _aggregate_completed_htf(candles, timeframe_ms)
     fast_period = cfg.get("htf_fast_period", 21)
     slow_period = cfg.get("htf_slow_period", 55)
     lookback = cfg.get("htf_slope_lookback", 6)
+    source = candles
+    if len(candles) >= 2 and timeframe_ms:
+        base_step = max(1, _to_int(candles[-1].get("t")) - _to_int(candles[-2].get("t")))
+        required_groups = max(fast_period, slow_period) * 4 + lookback + 2
+        required_candles = int(required_groups * timeframe_ms / base_step) + 2
+        source = candles[-required_candles:]
+    groups = _aggregate_completed_htf(source, timeframe_ms)
     if len(groups) < max(fast_period, slow_period) + lookback:
         return "unknown"
 
@@ -707,7 +746,11 @@ def _htf_regime(candles, cfg):
 
 def _market_context(candles, cfg):
     context = {}
-    if cfg.get("htf_regime_filter") != "off":
+    if (
+        cfg.get("htf_regime_filter") != "off"
+        or cfg.get("collect_market_context")
+        or cfg.get("collect_htf_context")
+    ):
         context["htf_regime"] = _htf_regime(candles, cfg)
         context["htf_timeframe"] = cfg.get("htf_timeframe", "4h")
     context.update(_dema_context(candles, cfg))
@@ -1573,7 +1616,7 @@ def _learning_register(patterns, cfg):
         LEARNING_STATE["open"] = LEARNING_STATE["open"][-max_open:]
 
 
-def _learning_record(trade, won):
+def _learning_record(trade, won, cfg):
     entry = float(trade["entry"])
     sl_price = float(trade["sl"])
     tp_price = float(trade["tp"])
@@ -1586,11 +1629,17 @@ def _learning_record(trade, won):
         "wins": 0,
         "losses": 0,
         "sum_r": 0.0,
+        "outcomes": [],
     })
-    stats["count"] += 1
-    stats["wins"] += 1 if won else 0
-    stats["losses"] += 0 if won else 1
-    stats["sum_r"] += r_value
+    outcomes = stats.setdefault("outcomes", [])
+    outcomes.append(r_value)
+    window = cfg.get("learning_window_samples", 0)
+    if window > 0 and len(outcomes) > window:
+        del outcomes[:-window]
+    stats["count"] = len(outcomes)
+    stats["wins"] = sum(1 for value in outcomes if value > 0)
+    stats["losses"] = stats["count"] - stats["wins"]
+    stats["sum_r"] = sum(outcomes)
 
 
 def _learning_update(candle, candles, cfg):
@@ -1607,11 +1656,11 @@ def _learning_update(candle, candles, cfg):
         hit_tp = high >= trade["tp"] if direction == "bullish" else low <= trade["tp"]
         hit_sl = low <= trade["sl"] if direction == "bullish" else high >= trade["sl"]
         if hit_tp or hit_sl:
-            _learning_record(trade, bool(hit_tp and not hit_sl))
+            _learning_record(trade, bool(hit_tp and not hit_sl), cfg)
             continue
         if current_i - trade.get("start_i", current_i) >= horizon:
             won = close > trade["entry"] if direction == "bullish" else close < trade["entry"]
-            _learning_record(trade, won)
+            _learning_record(trade, won, cfg)
             continue
         remaining.append(trade)
     LEARNING_STATE["open"] = remaining
@@ -1675,6 +1724,10 @@ def _set_trade_meta(pattern, context=None):
             "quality": pattern.get("quality"),
             "signal_i": pattern.get("signal_i"),
             "d_time": pattern.get("D", {}).get("t"),
+            "entry": pattern.get("_entry_price"),
+            "sl": pattern.get("_entry_sl"),
+            "tp": pattern.get("_entry_tp"),
+            "rr": pattern.get("_entry_rr"),
         }
         if isinstance(context, dict):
             meta.update({
@@ -1725,7 +1778,7 @@ def _bar_ms(pattern):
     return int(steps[-1]) if steps else 3_600_000
 
 
-def _level_drawings(group, pattern, price, text, color, style="dashed"):
+def _level_drawings(group, pattern, price, text, color, style="dashed", role=None):
     if price is None or price <= 0:
         return []
     d = pattern.get("D") or {}
@@ -1743,6 +1796,7 @@ def _level_drawings(group, pattern, price, text, color, style="dashed"):
             "style": style,
             "width": 1,
             "group": group,
+            "role": role,
         },
         {
             "type": "label",
@@ -1753,6 +1807,7 @@ def _level_drawings(group, pattern, price, text, color, style="dashed"):
             "style": "label_down",
             "size": "small",
             "group": group,
+            "role": role,
         },
     ]
 
@@ -1801,8 +1856,10 @@ def _trail_take_profit(pattern, cfg):
     return _target_price(pattern, mode)
 
 
-def _target_risk_stop(pattern, tp_price, ratio):
-    entry = pattern.get("D", {}).get("c")
+def _target_risk_stop(pattern, tp_price, ratio, entry_price=None):
+    entry = _to_float(entry_price, None)
+    if entry is None:
+        entry = pattern.get("D", {}).get("c")
     direction = pattern.get("direction")
     if entry is None or tp_price is None:
         return None
@@ -1816,7 +1873,7 @@ def _target_risk_stop(pattern, tp_price, ratio):
     return None
 
 
-def _stop_price(pattern, mode, cfg=None, tp_price=None):
+def _stop_price(pattern, mode, cfg=None, tp_price=None, entry_price=None):
     cfg = cfg if isinstance(cfg, dict) else {}
     value = str(mode or "").strip().lower()
     if value in ("strategy", "auto", "default", ""):
@@ -1824,14 +1881,19 @@ def _stop_price(pattern, mode, cfg=None, tp_price=None):
     if value in ("target_risk", "target_ratio", "target_distance", "risk_reward", "orantili", "1r"):
         if tp_price is None:
             tp_price = _target_price(pattern, cfg.get("take_profit_mode"))
-        return _target_risk_stop(pattern, tp_price, _to_float(cfg.get("stop_loss_target_ratio"), 1.0))
+        return _target_risk_stop(
+            pattern,
+            tp_price,
+            _to_float(cfg.get("stop_loss_target_ratio"), 0.2),
+            entry_price,
+        )
     if value in ("confirmation_zone", "zone", "teyit"):
         return _valid_level(pattern, pattern.get("confirmation_zone"), 0, False)
     if value in ("x_point", "x", "x_invalidated"):
         return pattern.get("X", {}).get("c")
     if value in ("bot_percent", "percent", "pct", "yuzde"):
         return _pct_level(
-            pattern.get("D", {}).get("c"),
+            _to_float(entry_price, None) or pattern.get("D", {}).get("c"),
             pattern.get("direction"),
             _to_float(cfg.get("stop_loss_pct"), None),
             False,
@@ -1839,32 +1901,64 @@ def _stop_price(pattern, mode, cfg=None, tp_price=None):
     return None
 
 
-def _trade_levels(pattern, cfg):
+def _trade_levels(pattern, cfg, entry_price=None):
     tp_price = _target_price(pattern, cfg.get("take_profit_mode"))
-    sl_price = _stop_price(pattern, cfg.get("stop_loss_mode"), cfg, tp_price)
+    sl_price = _stop_price(pattern, cfg.get("stop_loss_mode"), cfg, tp_price, entry_price)
     return sl_price, tp_price
 
 
-def _entry_trade_levels(pattern, cfg):
+def _entry_trade_levels(pattern, cfg, entry_price=None):
     if cfg.get("exit_mode") == "target_trail":
         trigger = _target_price(pattern, cfg.get("trail_trigger_mode") or "target_1")
         tp_price = _trail_take_profit(pattern, cfg)
-        sl_price = _stop_price(pattern, cfg.get("stop_loss_mode"), cfg, trigger)
+        sl_price = _stop_price(pattern, cfg.get("stop_loss_mode"), cfg, trigger, entry_price)
         return sl_price, tp_price
     if cfg.get("exit_mode") != "tp2_trail":
-        return _trade_levels(pattern, cfg)
+        return _trade_levels(pattern, cfg, entry_price)
     tp1 = _target_price(pattern, "target_1")
     tp2 = _target_price(pattern, "target_2") or tp1
-    sl_price = _stop_price(pattern, cfg.get("stop_loss_mode"), cfg, tp1)
+    sl_price = _stop_price(pattern, cfg.get("stop_loss_mode"), cfg, tp1, entry_price)
     return sl_price, tp2
 
 
-def _apply_trade_levels(pattern, cfg):
-    sl_price, tp_price = _entry_trade_levels(pattern, cfg)
+def _apply_trade_levels(pattern, cfg, entry_price=None):
+    sl_price, tp_price = _entry_trade_levels(pattern, cfg, entry_price)
     if tp_price is not None:
         set_tp(price=tp_price)
     if sl_price is not None:
         set_sl(price=sl_price)
+
+
+def _entry_level_info(pattern, cfg, entry_price):
+    entry = _to_float(entry_price, None)
+    sl_price, tp_price = _entry_trade_levels(pattern, cfg, entry)
+    direction = pattern.get("direction")
+    if entry is None or sl_price is None or tp_price is None:
+        return {"ok": False, "entry": entry, "sl": sl_price, "tp": tp_price, "rr": 0.0, "reward_pct": 0.0}
+
+    if direction == "bullish":
+        valid = sl_price < entry < tp_price
+    elif direction == "bearish":
+        valid = tp_price < entry < sl_price
+    else:
+        valid = False
+
+    risk = abs(entry - sl_price)
+    reward = abs(tp_price - entry)
+    rr = reward / risk if risk > 0 else 0.0
+    reward_pct = reward / entry * 100.0 if entry > 0 else 0.0
+    target_distance_ok = reward_pct >= cfg.get("min_target_pct", 0.0)
+    max_target_pct = cfg.get("max_target_pct", 0.0)
+    if max_target_pct > 0:
+        target_distance_ok = target_distance_ok and reward_pct <= max_target_pct
+    return {
+        "ok": valid and target_distance_ok and rr >= cfg.get("min_reward_risk", 0.0),
+        "entry": entry,
+        "sl": sl_price,
+        "tp": tp_price,
+        "rr": rr,
+        "reward_pct": reward_pct,
+    }
 
 
 def _atr_value(candles, period):
@@ -1880,12 +1974,12 @@ def _atr_value(candles, period):
     return sum(trs) / len(trs) if trs else None
 
 
-def _start_active_trade(pattern, cfg):
+def _start_active_trade(pattern, cfg, entry_price=None):
     global ACTIVE_TRADE
-    sl_price, tp_price = _entry_trade_levels(pattern, cfg)
+    sl_price, tp_price = _entry_trade_levels(pattern, cfg, entry_price)
     ACTIVE_TRADE = {
         "direction": pattern.get("direction"),
-        "entry": None,
+        "entry": _to_float(entry_price, None),
         "sl": sl_price,
         "tp": tp_price,
         "tp1": _target_price(pattern, "target_1"),
@@ -1927,17 +2021,17 @@ def _manage_active_trade(candle, candles, cfg):
     current_sl = ACTIVE_TRADE.get("sl")
     close = float(candle.close)
     if direction == "bullish":
-        breakeven = entry * (1.0 - buffer_pct)
+        breakeven = entry * (1.0 + buffer_pct)
         trail = close - atr * cfg.get("trail_atr_mult", 1.2) if atr is not None else breakeven
-        candidates = [v for v in (current_sl, breakeven, trail) if v is not None and v < entry]
+        candidates = [v for v in (current_sl, breakeven, trail) if v is not None and v < close]
         if candidates:
             next_sl = max(candidates)
             ACTIVE_TRADE["sl"] = next_sl
             set_sl(price=next_sl)
     elif direction == "bearish":
-        breakeven = entry * (1.0 + buffer_pct)
+        breakeven = entry * (1.0 - buffer_pct)
         trail = close + atr * cfg.get("trail_atr_mult", 1.2) if atr is not None else breakeven
-        candidates = [v for v in (current_sl, breakeven, trail) if v is not None and v > entry]
+        candidates = [v for v in (current_sl, breakeven, trail) if v is not None and v > close]
         if candidates:
             next_sl = min(candidates)
             ACTIVE_TRADE["sl"] = next_sl
@@ -1945,7 +2039,7 @@ def _manage_active_trade(candle, candles, cfg):
     hold()
 
 
-def _pattern_drawings(pattern, config=None):
+def _pattern_drawings(pattern, config=None, entry_price=None):
     color = _pattern_color(pattern)
     helper_color = color
     group = _pattern_group(pattern)
@@ -1959,6 +2053,7 @@ def _pattern_drawings(pattern, config=None):
             "style": "solid",
             "width": 1,
             "group": group,
+            "role": "pattern_geometry",
         })
     for first, second in (("X", "B"), ("B", "D")):
         drawings.append({
@@ -1969,6 +2064,7 @@ def _pattern_drawings(pattern, config=None):
             "style": "dotted",
             "width": 1,
             "group": group,
+            "role": "pattern_geometry",
         })
     drawings.append({
         "type": "label",
@@ -1979,18 +2075,36 @@ def _pattern_drawings(pattern, config=None):
         "style": "label_up" if pattern.get("direction") == "bullish" else "label_down",
         "size": "small",
         "group": group,
+        "role": "pattern_label",
     })
 
     for idx, target in enumerate((pattern.get("targets") or [])[:2], start=1):
-        drawings.extend(_level_drawings(group, pattern, _to_float(target, None), f"Hedef {idx}", "#38bdf8"))
+        drawings.extend(_level_drawings(
+            group,
+            pattern,
+            _to_float(target, None),
+            f"Hedef {idx}",
+            "#38bdf8",
+            role=f"target_{idx}",
+        ))
 
     for idx, zone_price in enumerate((pattern.get("confirmation_zone") or [])[:2], start=1):
-        drawings.extend(_level_drawings(group, pattern, _to_float(zone_price, None), f"Teyit {idx}", "#f59e0b", "dotted"))
+        drawings.extend(_level_drawings(
+            group,
+            pattern,
+            _to_float(zone_price, None),
+            f"Teyit {idx}",
+            "#f59e0b",
+            "dotted",
+            "confirmation",
+        ))
 
     cfg = _cfg(config)
-    sl_price, tp_price = _trade_levels(pattern, cfg)
-    drawings.extend(_level_drawings(group, pattern, sl_price, "SL", "#ef4444"))
-    drawings.extend(_level_drawings(group, pattern, tp_price, "TP", "#22c55e"))
+    if entry_price is not None:
+        drawings.extend(_level_drawings(group, pattern, entry_price, "Giris", "#cbd5e1", "dotted", "entry_guide"))
+    sl_price, tp_price = _trade_levels(pattern, cfg, entry_price)
+    drawings.extend(_level_drawings(group, pattern, sl_price, "SL", "#ef4444", role="stop_guide"))
+    drawings.extend(_level_drawings(group, pattern, tp_price, "TP", "#22c55e", role="take_profit_guide"))
     return drawings
 
 
@@ -2009,6 +2123,7 @@ def _draw_pattern(pattern):
                 style=drawing["style"],
                 width=drawing["width"],
                 group=drawing.get("group"),
+                role=drawing.get("role"),
             )
         elif drawing["type"] == "label" and callable(label_new):
             label_new(
@@ -2019,6 +2134,7 @@ def _draw_pattern(pattern):
                 style=drawing["style"],
                 size=drawing["size"],
                 group=drawing.get("group"),
+                role=drawing.get("role"),
             )
 
 
@@ -2029,15 +2145,134 @@ def draw(candles, indicators, patterns, config=None):
     if not found:
         return []
     drawings = []
+    current_entry = _to_float(source[-1].get("c"), None) if source else None
+    last_index = len(source) - 1
     for pattern in found[:cfg["max_draw_patterns"]]:
-        drawings.extend(_pattern_drawings(pattern, cfg))
+        entry_for_draw = None
+        if last_index - int(pattern.get("signal_i", -10**9)) <= cfg["recent_signal_bars"]:
+            level_info = _entry_level_info(pattern, cfg, current_entry)
+            if level_info["ok"]:
+                entry_for_draw = current_entry
+        drawings.extend(_pattern_drawings(pattern, cfg, entry_for_draw))
     return drawings
+
+
+def _trade_candidates(patterns, candles, cfg, market_context, direction=None):
+    smc_events = _recent_smc_events(candles, cfg)
+    current_entry = _to_float(candles[-1].get("c"), None)
+    candidates = []
+    for item in patterns:
+        if direction is not None and item.get("direction") != direction:
+            continue
+        if not (cfg["allow_short"] or item.get("direction") == "bullish"):
+            continue
+        if not _passes_trade_filters(item, cfg):
+            continue
+        if not _passes_learning_filter(item, cfg):
+            continue
+        if not _passes_market_filters(item, candles, cfg, market_context):
+            continue
+        if not _passes_smc_filter(item, smc_events, cfg):
+            continue
+        level_info = _entry_level_info(item, cfg, current_entry)
+        if not level_info["ok"]:
+            continue
+        candidate = dict(item)
+        candidate["_entry_price"] = level_info["entry"]
+        candidate["_entry_sl"] = level_info["sl"]
+        candidate["_entry_tp"] = level_info["tp"]
+        candidate["_entry_rr"] = level_info["rr"]
+        candidate["_entry_reward_pct"] = level_info["reward_pct"]
+        candidates.append(candidate)
+    candidates.sort(key=lambda p: (_pattern_priority(p, cfg, market_context), p.get("_entry_rr", 0.0)), reverse=True)
+    return candidates
+
+
+def _queue_pending_entries(candidates, candles, cfg):
+    global PENDING_ENTRIES
+    current_index = len(candles) - 1
+    limit = cfg.get("max_pending_entries", 20)
+    for pattern in candidates:
+        if len(PENDING_ENTRIES) >= limit:
+            break
+        key = _pattern_key(pattern)
+        if key in PENDING_ENTRIES or key == LAST_SIGNAL_KEY:
+            continue
+        origin = _to_float(pattern.get("D", {}).get("c"), None)
+        target = _target_price(pattern, cfg.get("take_profit_mode"))
+        if origin is None or target is None:
+            continue
+        fraction = cfg.get("entry_confirmation_fraction", 0.1)
+        trigger = origin + (target - origin) * fraction
+        invalidation = _stop_price(pattern, cfg.get("stop_loss_mode"), cfg, target, origin)
+        PENDING_ENTRIES[key] = {
+            "pattern": dict(pattern),
+            "trigger": trigger,
+            "invalidation": invalidation,
+            "expires": current_index + cfg.get("entry_confirmation_bars", 8),
+        }
+
+
+def _confirmed_pending_candidates(candles, cfg, market_context):
+    global PENDING_ENTRIES
+    if not PENDING_ENTRIES:
+        return []
+    current_index = len(candles) - 1
+    current = candles[-1]
+    close = _to_float(current.get("c"), None)
+    low = _to_float(current.get("l"), close)
+    high = _to_float(current.get("h"), close)
+    confirmed = []
+    remove = []
+    for key, pending in PENDING_ENTRIES.items():
+        pattern = pending["pattern"]
+        direction = pattern.get("direction")
+        invalidation = pending.get("invalidation")
+        if current_index > pending["expires"]:
+            remove.append(key)
+            continue
+        if direction == "bullish" and invalidation is not None and low <= invalidation:
+            remove.append(key)
+            continue
+        if direction == "bearish" and invalidation is not None and high >= invalidation:
+            remove.append(key)
+            continue
+        trigger = pending["trigger"]
+        reached = (
+            direction == "bullish" and close is not None and close >= trigger
+        ) or (
+            direction == "bearish" and close is not None and close <= trigger
+        )
+        if not reached:
+            continue
+        if not _passes_market_filters(pattern, candles, cfg, market_context):
+            remove.append(key)
+            continue
+        level_info = _entry_level_info(pattern, cfg, close)
+        remove.append(key)
+        if not level_info["ok"]:
+            continue
+        candidate = dict(pattern)
+        candidate["_entry_price"] = level_info["entry"]
+        candidate["_entry_sl"] = level_info["sl"]
+        candidate["_entry_tp"] = level_info["tp"]
+        candidate["_entry_rr"] = level_info["rr"]
+        candidate["_entry_reward_pct"] = level_info["reward_pct"]
+        confirmed.append(candidate)
+    for key in remove:
+        PENDING_ENTRIES.pop(key, None)
+    confirmed.sort(
+        key=lambda p: (_pattern_priority(p, cfg, market_context), p.get("_entry_rr", 0.0)),
+        reverse=True,
+    )
+    return confirmed
 
 
 def on_candle(candle, portfolio, config):
     global LAST_SIGNAL_KEY
     global OBSERVED_KEYS
     global ACTIVE_TRADE
+    global PENDING_ENTRIES
 
     candles = _series_candles()
     if len(candles) < 40:
@@ -2070,6 +2305,33 @@ def on_candle(candle, portfolio, config):
     _learning_register(patterns, cfg)
 
     if bool(getattr(portfolio, "has_position", False)):
+        PENDING_ENTRIES.clear()
+        if cfg.get("exit_on_opposite_pattern"):
+            active_direction = (ACTIVE_TRADE or {}).get("direction")
+            if active_direction not in ("bullish", "bearish"):
+                active_direction = "bullish" if str(getattr(portfolio, "side", "")).upper() == "BUY" else "bearish"
+            opposite_direction = "bearish" if active_direction == "bullish" else "bullish"
+            opposite_candidates = _trade_candidates(
+                patterns,
+                candles,
+                cfg,
+                market_context,
+                direction=opposite_direction,
+            )
+            if opposite_candidates:
+                pattern = opposite_candidates[0]
+                signal_key = _pattern_key(pattern)
+                if signal_key != LAST_SIGNAL_KEY:
+                    LAST_SIGNAL_KEY = signal_key
+                    entry_price = pattern.get("_entry_price")
+                    _apply_trade_levels(pattern, cfg, entry_price)
+                    _start_active_trade(pattern, cfg, entry_price)
+                    _set_trade_meta(pattern, market_context)
+                    if pattern["direction"] == "bullish":
+                        buy()
+                    else:
+                        sell()
+                    return
         if ACTIVE_TRADE is not None:
             _manage_active_trade(candle, candles, cfg)
         else:
@@ -2079,27 +2341,39 @@ def on_candle(candle, portfolio, config):
     if ACTIVE_TRADE is not None:
         ACTIVE_TRADE = None
 
+    if cfg.get("entry_confirmation_mode") == "target_fraction":
+        confirmed = _confirmed_pending_candidates(candles, cfg, market_context)
+        if confirmed:
+            pattern = confirmed[0]
+            signal_key = _pattern_key(pattern)
+            LAST_SIGNAL_KEY = signal_key
+            PENDING_ENTRIES.clear()
+            entry_price = pattern.get("_entry_price")
+            _apply_trade_levels(pattern, cfg, entry_price)
+            _start_active_trade(pattern, cfg, entry_price)
+            _set_trade_meta(pattern, market_context)
+            if pattern["direction"] == "bullish":
+                buy()
+            elif cfg["allow_short"]:
+                sell()
+            else:
+                hold()
+            return
+        if patterns:
+            pending_candidates = _trade_candidates(patterns, candles, cfg, market_context)
+            _queue_pending_entries(pending_candidates, candles, cfg)
+        hold()
+        return
+
     if not patterns:
         hold()
         return
 
-    smc_events = _recent_smc_events(candles, cfg)
-    trade_patterns = [
-        p for p in patterns
-        if (
-            (cfg["allow_short"] or p.get("direction") == "bullish")
-            and
-            _passes_trade_filters(p, cfg)
-            and _passes_learning_filter(p, cfg)
-            and _passes_market_filters(p, candles, cfg, market_context)
-            and _passes_smc_filter(p, smc_events, cfg)
-        )
-    ]
+    trade_patterns = _trade_candidates(patterns, candles, cfg, market_context)
     if not trade_patterns:
         hold()
         return
 
-    trade_patterns.sort(key=lambda p: _pattern_priority(p, cfg, market_context), reverse=True)
     pattern = trade_patterns[0]
 
     signal_key = _pattern_key(pattern)
@@ -2108,14 +2382,15 @@ def on_candle(candle, portfolio, config):
         return
 
     LAST_SIGNAL_KEY = signal_key
+    entry_price = pattern.get("_entry_price")
     if pattern["direction"] == "bullish":
-        _apply_trade_levels(pattern, cfg)
-        _start_active_trade(pattern, cfg)
+        _apply_trade_levels(pattern, cfg, entry_price)
+        _start_active_trade(pattern, cfg, entry_price)
         _set_trade_meta(pattern, market_context)
         buy()
     elif cfg["allow_short"]:
-        _apply_trade_levels(pattern, cfg)
-        _start_active_trade(pattern, cfg)
+        _apply_trade_levels(pattern, cfg, entry_price)
+        _start_active_trade(pattern, cfg, entry_price)
         _set_trade_meta(pattern, market_context)
         sell()
     else:

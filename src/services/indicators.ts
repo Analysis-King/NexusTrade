@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { getWorkerPool } from '../workers/pool.js';
+import { getJobWorkerPool as getWorkerPool } from '../workers/pool.js';
 import { candleToRaw } from '../workers/types.js';
 import { NotFoundError, ValidationError } from '../utils/errors.js';
 import type { Candle } from '../types/domain.js';
