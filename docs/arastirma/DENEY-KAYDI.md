@@ -3,9 +3,23 @@
 Şimdiye kadar denenen her şey ve sonucu. Yeni deney eklemeden önce
 [03-ARASTIRMA-PROTOKOLU.md](../03-ARASTIRMA-PROTOKOLU.md)'yu oku; şablon orada.
 
-Aşağıdaki ilk kayıtlar 2026-11-26'da mevcut raporlardan ve paper sonuçlarından geriye dönük derlendi.
-"Denenen varyant sayısı" bu deneylerin çoğunda kayıtlı değil; bu yüzden sonuçlarına ekstra şüpheyle bakılmalı.
-Haziran ve Temmuz raporlarının tamamı `data/` altında; F0-7 kapsamında eksik deneyler eklenecek.
+Aşağıdaki kayıtlar 2026-11-26'da `data/` altındaki 555 rapordan ve paper sonuçlarından geriye dönük derlendi
+(EXP-011 ile EXP-018 arası F0-7 kapsamında eklendi). "Denenen varyant sayısı" çoğunda kayıtlı değil; bu yüzden
+sonuçlarına ekstra şüpheyle bakılmalı.
+
+**Raporlardaki "Avg Daily %" hakkında:** Çoğu tarama sembol başına ayrı hesap simüle ediyor. "Pozitif
+X/Y" sembol veya pencere sayısıdır; hesabı sıfırlanan semboller ("null") ortalamaya girmez, yani ortalama
+olduğundan iyi görünür.
+
+## Bu kayıttan çıkan üç ders
+
+1. **Az pencere, büyük umut; çok pencere, sıfır.** Birçok aile 4-7 pencerede günlük %0.3-1.3 gösterdi;
+   aynı aile 15-20 pencerede ya da temizlenmiş sembol evreninde sıfıra yakın çıktı (EXP-013, EXP-014).
+2. **Backtest ile paper arasında büyük açık var ve açıklanmadı.** Harmonik Portföy backtest'te 5 pencerede
+   günlük %0.84-1.59 ve %27-32 kazanma oranı gösterdi; paper testte kazanma oranı %11.7, sonuç −%46.6
+   (EXP-016 → EXP-005). Faz 1'deki altın test (F1-6) önce bu farkı açıklamalı.
+3. **Bitmemiş tek umut verici iş:** risk filtreli iç içe seçici (EXP-013c), 14 kör pencerenin 13'ünde
+   pozitif. Hiç ileriye dönük test edilmedi.
 
 ## Özet
 
@@ -21,6 +35,14 @@ Haziran ve Temmuz raporlarının tamamı `data/` altında; F0-7 kapsamında eksi
 | EXP-008 | Harmonik Tarayıcı V2 HTF Onay | Paper portföy | 2026-07-21 → | 8 işlem, kazanma %37.5, +%0.8 | Karar verilemez |
 | EXP-009 | Harmonik bot (filtresiz) | Paper bot | 2026-05-31 → 11-25 | 93 işlem, kazanma %47.3, **−220 $ / 1000 $** | Kaldı |
 | EXP-010 | qwm3 / qwm5 (QM-Wolfe) | Paper bot | 2026-06-02 → | qwm3: kapanan işlem yok; qwm5: −61 $ / 1000 $ | Hipotez yok |
+| EXP-011 | Orphan Market Reader | Backtest | 2026-05-21 → 06-18 | Tek sembolde %0.75-1.08/gün (17 işlem); 50 sembolde ~%0.03/gün | Kaldı |
+| EXP-012 | MOST, QM/Wolfe, çoklu strateji 50 sembol | Backtest | 2026-06-13 → 06-14 | Hiçbir varyant 50 sembolde ortalama %0.1/gün'ü geçmedi | Kaldı |
+| EXP-013 | Kesitsel momentum, fonlama, iç içe seçiciler | Backtest | 2026-06-14 → 06-25 | Momentum ve fonlama dağıldı; risk filtreli seçici 13/14 pozitif | Karışık |
+| EXP-014 | Vadeli Orphan, kaldıraç taraması | Backtest | 2026-06-18 | Kaldıraç arttıkça ortalama kötüleşti | Kaldı |
+| EXP-015 | İnternet stratejileri, universal alpha, edge miner | Backtest | 2026-06-25 → 06-26 | Hepsi günlük −%0.22 ile +%0.0 arası | Kaldı |
+| EXP-016 | Harmonik çıkış optimizasyonu ve portföy adayı | Backtest | 2026-06-26 → 06-28 | ~209 varyant; portföy adayı 5 pencerede %0.84-1.59/gün | Paper'da kaldı (EXP-005) |
+| EXP-017 | Harmonik V2 taramaları (matris, ABCD, çıkış) | Backtest | 2026-07-05 → 07-07 | 50 sembolde hiçbir periyot/süre ortalamada pozitif değil (1h 1 yıl −%19) | Kaldı |
+| EXP-018 | Harmonik dayanıklılık araması ve Yengeç nihai test | Backtest | 2026-07-08 | Train ve test'te PF>1 kalan 2 bearish pattern seçildi (test'te 46 ve 21 işlem) | Paper'da kaldı (EXP-007) |
 
 Paper portföy sonuçları 2026-11-26 raporlarından; hepsinin planlanan süresi dolmuş ama işlem açmaya devam
 ettikleri için rakamlar değişebilir.
@@ -94,9 +116,10 @@ ettikleri için rakamlar değişebilir.
 ### EXP-007 · Harmonik Tarayıcı V2 (Yengeç + 3 Basamak, bearish)
 
 - **Durum:** Kaldı
-- **Seçim:** Pattern/yön/rejim kombinasyonları içinden "train ve test döneminde PF>1 olan tek çift"
-  (`data/harmonic_robustness_search_v2_2026-07-08T00-23-10.md`). Denenen kombinasyon sayısı yüksek ama
-  kayıtlı değil.
+- **Seçim:** Pattern/yön/rejim kombinasyonları içinden train ve test döneminde PF>1 kalan bearish
+  pattern'lerden ikisi: Yengeç (test'te 46 işlem, PF 2.57) ve 3 Basamak (test'te 21 işlem, PF 2.68)
+  (`data/harmonic_robustness_search_v2_2026-07-08T00-23-10.md`, EXP-018). Denenen kombinasyon sayısı yüksek
+  ama kayıtlı değil.
 - **Kurulum:** 380 sembol, 1h + 4h, en fazla 15 pozisyon, 1x, sadece short.
 - **Tarih:** 2026-07-08 →
 - **Sonuç:** 183 işlem, kazanma %18.6, −%16.2. Hedef stop mesafesinin 5 katı olduğu için başa baş kazanma
@@ -125,4 +148,146 @@ ettikleri için rakamlar değişebilir.
 - **Strateji:** `qm_wolfe_patterns.py`; qwm3 ETHUSDT 4h, qwm5 ADAUSDT 5m.
 - **Tarih:** 2026-06-02 →
 - **Sonuç (2026-11-26):** qwm3 kapanan işlem yok; qwm5 −61 $ / 1000 $.
-- **Sonraki adım:** Ya protokole göre kayda alınıp hipotez ve bitiş kriteri yazılsın, ya da durdurulsun.
+- **Not:** Aynı strateji dosyası 13 Haziran'da 20-50 sembolde 30'dan fazla varyantla taranmıştı (EXP-012);
+  hiçbir varyant ortalamada günlük %0.02'yi geçmedi. Bu botların avantajı olduğuna dair kayıtlı bir kanıt yok.
+- **Sonraki adım:** Durdurulması önerilir; ya da protokole göre hipotez ve bitiş kriteri yazılsın.
+
+### EXP-011 · Orphan Market Reader
+
+- **Durum:** Kaldı
+- **Tarih:** 2026-05-21 → 05-31 (spot), 2026-06-18 (vadeli, EXP-014)
+- **Strateji:** `orphan_market_reader.py`, 5m / 30m / 1h, 2-3x
+- **Sonuç:**
+  - Tek sembolde çok iyi görünen sonuç: ZECUSDT 30m günlük %0.75 (2x) - %1.08 (3x), ama **17 işlem**.
+  - 50 sembolde yeniden tarama (31 Mayıs): ortalama günlük %0.03 (1x) - %0.07 (3x), medyan ~%0.
+  - Walk-forward'da en iyi 10 profil: ortalama günlük −%0.07, 10 profilin 2'si pozitif.
+  - 5m taramaları: 50 sembolün 0-2'si pozitif.
+- **Ders:** 17 işlemlik tek sembol sonucu kaldıraçla büyütülünce hedefi aşıyor gibi görünür; genelleşmedi.
+- **Rapor:** `data/orphan_market_reader_*.md`, `data/orphan_gate_*.md`
+
+### EXP-012 · MOST, QM/Wolfe ve çoklu strateji karşılaştırması (50 sembol)
+
+- **Durum:** Kaldı
+- **Tarih:** 2026-06-13 → 06-14
+- **Denenen:**
+  - MOST (`most_rsi_stoch.py`): 1h / 2h / 4h / 15m, retest-red, flip, stop, cooldown, rejim, zamanlama
+    varyantları; ATR/MOST parametre optimizasyonu. Toplam 40'tan fazla varyant.
+  - QM/Wolfe (`qm_wolfe_patterns.py`): 30'dan fazla filtre varyantı, top-20 ve 50 sembol.
+  - 50 sembolde Bollinger, DEMA, mined reversal, SMC, arz/talep, trend ATR, Orphan.
+- **Sonuç:**
+  - MOST: 4h varyantlarında sembol ortalaması günlük −%0.16 ile +%0.08 arası; 1h ve 15m'de −%0.18 ile
+    −%0.69, birçok sembolde hesap sıfırlanıyor. ATR/MOST optimizasyonu: "hedefi geçen aday yok", en iyi aday
+    medyan günlük ~%0.
+  - QM/Wolfe: tüm varyantlar ortalama günlük −%0.08 ile +%0.02 arası; hiçbir sembol %0.8'e ulaşmadı.
+  - Haziran adayı Donchian RR 3.5 top-50'ye uygulanınca: ortalama −%0.24/gün, 50 sembolün 13'ü pozitif.
+- **Rapor:** `data/most_*.md`, `data/multi50_*.md`, `data/qm_*.md`, `data/atr_most_*.md`,
+  `data/multi_strategy_50_symbol_comparison_*.md`
+
+### EXP-013 · Kesitsel momentum, fonlama ve iç içe seçiciler
+
+- **Durum:** Karışık. Momentum ve fonlama kaldı; risk filtreli seçici yarım kaldı.
+- **Tarih:** 2026-06-14 → 06-25
+- **Ortam:** 50 likit Binance USDT vadeli, 45 günlük bağımsız pencereler, her pencere için konfigürasyon
+  sadece daha eski pencerelere bakılarak seçiliyor ("nested walk-forward").
+
+**a) Kesitsel momentum (vadeli):**
+- 14 Haziran, 7 pencere: "consistent momentum taker7" günlük %0.72, "refined momentum" %0.67 (7 pencerenin
+  5'i pozitif, ortalama düşüş %45-50).
+- 18-19 Haziran, temizlenmiş kripto evreni: aynı aile −%0.17 ile +%0.20.
+- 25 Haziran, 15-19 pencere: %0.04-0.05; "flip" ve "refine" varyantları −%0.20 ile −%0.34.
+- Ders: 7 pencerede görülen sonuç, pencere sayısı artınca kayboldu.
+
+**b) Fonlama (funding carry):**
+- 14 Haziran, 4 pencere: "carry confirmed" günlük %1.30, ama en kötü pencere −%1.67 ve düşüş %47-73.
+- 19 Haziran, temiz test: ayar döneminde 7/7 pozitif (%0.33/gün); holdout −%0.23; sembol holdout'u −%0.17;
+  iç içe seçici −%0.28.
+
+**c) Risk filtreli iç içe strateji seçici:**
+- Girdi: 16 strateji ailesinin (Donchian, Orphan, harmonik, QM, SMC, MOST vb.) 12 Haziran walk-forward
+  sonuçları, top-20/50 sembol. Her kör pencerede 24.576 kural adayından biri sadece eski pencerelere bakılarak
+  seçiliyor; seçilen plan neredeyse her pencerede "en iyi strateji ailesinin momentumu".
+- Sonuç (14 kör pencere, 45 gün): düşüş limiti %20 ile günlük %0.49, 14'ün 13'ü pozitif, ortalama düşüş %12;
+  limit %30 ile günlük %0.67, 14/14 pozitif, en kötü düşüş %32.
+- **Dikkat:**
+  - Girdi stratejilerin parametreleri aynı veride geliştirildi; kural seçimi kör, stratejiler değil.
+  - Düşüş "tahmini"; portföy aynı anda birçok sembolde pozisyon taşıyınca gerçek düşüş farklı olabilir.
+  - 24.576 aday çok sayıda deneme demek (protokol 4. bölüm).
+- **Sonraki adım (yazılmamış, şimdi öneriliyor):** 14 Haziran'da seçilen kuralı sabitleyip 14 Haziran
+  sonrası veride çalıştırmak. Faz 2'de aday.
+
+**d) Diğerleri (hepsi kaldı):**
+- Günlük volatilite kırılımı −%0.14
+- Order-flow kesitsel −%0.83
+- Pairs trading −%0.06
+- ML kesitsel −%0.04 / −%0.21
+- Rejim kapılı seçici %0.16 (7 pencerenin 5'i pozitif, en kötü düşüş %69)
+- Adaptive trend replikasyonu %0.00-0.08 (sadece ayar dönemi)
+- Robust alpha −%0.19 / −%0.25
+
+- **Rapor:** `data/consistent_momentum_*.md`, `data/perp_*.md`, `data/funding_*.md`,
+  `data/nested_selector_*.md`, `data/regime_*.md`
+
+### EXP-014 · Vadeli Orphan ve kaldıraç taraması
+
+- **Durum:** Kaldı
+- **Tarih:** 2026-06-18
+- **Sonuç:** Olgun 12 sembolde ABCD long 1h: 2x'te ortalama günlük −%0.005; 12x'te −%0.18, 14x'te −%0.24
+  (84 vakanın 7'si %0.8'i geçiyor ama ortalama negatif). Seçili profiller 2x portföy: walk-forward %0.03-0.41,
+  tutarsız. Tek sembol BNB 1h 8x: 7/7 pozitif, %0.64; tek sembol, 7 vaka.
+- **Ders:** Kaldıraç kötü ortalamayı iyileştirmiyor; sadece birkaç şanslı vakayı %0.8'in üstüne taşıyor.
+- **Rapor:** `data/orphan_futures_*_20260618.md`
+
+### EXP-015 · İnternet stratejileri, universal alpha, edge miner
+
+- **Durum:** Kaldı
+- **Tarih:** 2026-06-25 → 06-26
+- **Sonuç:** İnternet strateji karışımı ve tersi: 20 pencerede ~%0.00/gün. Universal alpha portföyleri:
+  −%0.10 ile −%0.22. Universal rejim meta: −%0.13 (19 pencerenin 5'i pozitif). Edge miner: −%0.01.
+  Donchian long/short top-50 örtüşmeyen 45 gün: −%0.14 / −%0.04.
+- **Rapor:** `data/internet_strategy_*.md`, `data/universal_*.md`, `data/edge_miner_*.md`
+
+### EXP-016 · Harmonik çıkış optimizasyonu ve portföy adayı
+
+- **Durum:** Backtest'te geçti, paper testte kaldı (EXP-005, EXP-006)
+- **Tarih:** 2026-06-26 → 06-28
+- **Yöntem:** `scripts/harmonic_exit_optimizer.cjs`, 15m / 1h / 4h, 50 sembol, 90 günlük pencereler ve
+  90-270 gün kaydırılmış pencereler. 90 raporda yaklaşık **209 farklı varyant** (pattern filtresi, TP hedefi,
+  SL oranı, ADX/HTF/DEMA filtreleri, "öğrenen" filtreler, repaint açık/kapalı).
+- **Sembol başına sonuç:** 422 varyant satırının 130'u pozitif. Sonradan portföye alınan "detail_seed"
+  filtresi sembol başına günlük −%0.02 ile −%0.04 arasında.
+- **Portföy adayı (28 Haziran):** 6 pattern/zigzag/yön filtresi, TP = hedef 2, SL = hedef mesafesinin %20'si,
+  en fazla 10 pozisyon, 12x. Beş 90 günlük pencerede günlük %0.84-1.59 (ortalama %1.12), kazanma oranı
+  %27-32, gerçekleşmiş en büyük düşüş %42-71. Son pencere "görülmemiş holdout" olarak işaretli.
+- **İleriye dönük sonuç:** Paper portföy (EXP-005) kazanma oranı %11.7, −%46.6.
+- **Açıklanmamış fark:** Backtest motoru mumları sırayla işliyor (pool_worker `backtest`), yani bariz bir
+  geleceği görme yok. Olası nedenler, doğrulanmadı:
+  - 6 filtre aynı pencerelerde 200'den fazla varyant içinden seçildi; "holdout" penceresi filtre
+    seçimi sırasında gerçekten görülmemiş mi, kayıtlı değil.
+  - Backtest ve paper script'i farklı kod (Y-1).
+  - Sembol başına avantaj ~0 iken sonucu 12x kaldıraç ve "hedef mesafesine göre sıralama" üretiyor;
+    bu çok kırılgan.
+  - Temmuz sonrası piyasa rejimi.
+- **Sonraki adım:** F1-6 altın testinde paper dönemini (19 Temmuz - 26 Kasım) backtest motoruyla yeniden
+  oynatıp işlem işlem karşılaştırmak. Fark açıklanmadan hiçbir harmonik sonucu güvenilir sayılmamalı.
+- **Rapor:** `data/harmonic_exit_optimizer_*.md`, `data/harmonic_portfolio_candidate_20260628.md`
+
+### EXP-017 · Harmonik V2 taramaları
+
+- **Durum:** Kaldı
+- **Tarih:** 2026-07-05 → 07-07
+- **Sonuç:** V2 portföy matrisi (50 sembol, 15m / 1h / 4h, 3 ay - 2 yıl): hiçbir hücrede ortalama getiri
+  pozitif değil; 1h 1 yılda −%19 (karlı sembol %10), 4h 1 yılda −%8 (karlı sembol %28). Kazanma oranı her
+  yerde %15-20. ABCD ve çıkış taramalarında en iyi satırlar PF 0.98-1.31.
+- **Rapor:** `data/harmonic_portfolio_matrix*.md`, `data/harmonic_*_sweep_v2_*.md`,
+  `data/harmonic_pattern_breakdown_v2_*.md`
+
+### EXP-018 · Harmonik dayanıklılık araması ve Yengeç nihai test
+
+- **Durum:** Paper testte kaldı (EXP-007)
+- **Tarih:** 2026-07-08
+- **Sonuç:** Train/test ayrımında PF>1 kalan bearish pattern'ler: 3 Basamak (test'te 21 işlem), Yengeç
+  (46 işlem), Derin Yengeç (129 işlem, test PF 1.02). Yengeç nihai test matrisi: 1h 1 yılda sembol başına
+  ortalama 4.7 işlem, ortalama getiri %0.36, karlı sembol %33.
+- **Ders:** Test'te 21-46 işlemlik PF, 380 sembollük bir portföyü başlatmak için yetersizdi; protokol
+  eşikleri (holdout ≥30 işlem, çok varyant varsa PF ≥1.4 ve ≥200 işlem) o zaman olsaydı geçmezdi.
+- **Rapor:** `data/harmonic_robustness_search_v2_*.md`, `data/harmonic_yengec_final_test_v2_*.md`

@@ -47,3 +47,9 @@ coverage/
 
 # OS
 Thumbs.db
+
+# Başlatıcı (.NET) derleme çıktıları ve boş NuGet klasörleri
+tools/NexusTradeLauncher/bin/
+tools/NexusTradeLauncher/obj/
+tools/NexusTradeLauncher/NuGet/
+NuGet/

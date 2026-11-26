@@ -73,12 +73,34 @@ Madde numaralarındaki K/Y/O kodları [01-SISTEM-INCELEMESI.md](01-SISTEM-INCELE
 | F0-3 | Negatif PnL'yi eksi işaretiyle göster (5 yer) | K-5 | S | Bitti |
 | F0-4 | Paper portföylere "Durdur"; bitiş tarihinde yeni işlem açmayı kes; kaybedenleri durdur | K-6 | M | Kod bitti; backend yeniden başlatılınca düğmeler görünür. Kaybedenleri durdurmak senin kararın |
 | F0-5 | `.env.example` içindeki değerleri yer tutucuyla değiştir, kullanılan secret'ları yenile | K-3 | S | Örnek dosya temizlendi; `.env`'deki değerleri yenilemek sende |
-| F0-6 | Kullanılmayan strateji ve script'leri arşive taşı; `public/` ve başlatıcı binary'lerini temizle | O-1 | M | Bekliyor |
-| F0-7 | Deney kaydındaki eski deneyleri tamamla (Haziran ve Temmuz raporlarından) | Y-3 | S | Bekliyor |
+| F0-6 | Kullanılmayan strateji ve script'leri arşive taşı; `public/` ve başlatıcı binary'lerini temizle | O-1 | M | Envanter ve öneri hazır (aşağıda); taşıma onay bekliyor |
+| F0-7 | Deney kaydındaki eski deneyleri tamamla (Haziran ve Temmuz raporlarından) | Y-3 | S | Bitti (EXP-011 - EXP-018) |
 | F0-8 | Backend çökmesini kapat (ayrı oturumda devam ediyor) | K-2 | M | Ayrı oturumda |
 
 **Kapı:** Her şey yedekli ve GitHub'da. Çalışan her bot ve portföy arayüzde görünüyor ve durdurulabiliyor.
 Ekrandaki sayılar doğru.
+
+#### F0-6 envanteri ve önerisi (2026-11-26, uygulanmadı)
+
+- **Script'ler (65):**
+  - 12'si sistem tarafından kullanılıyor: `package.json`, supervisor, başlatıcı.
+  - Faz 1-2 için gerekenler:
+    - `nested_strategy_selector.cjs` + `strategy_portfolio_blend.cjs` (EXP-013c yeniden testi)
+    - `orphan_market_reader_walk_forward*.cjs` (adı yanıltıcı; "Strategy Walk-Forward" raporlarını üreten genel
+      walk-forward)
+    - `harmonic_exit_optimizer.cjs` (F1-6 karşılaştırması)
+  - Kalan ~45 script kapanmış deneylerin araştırma araçları (EXP-011 - EXP-018). Öneri: `scripts/archive/`
+    altına taşınsın ve bakımı yapılmasın. Taşınınca içlerindeki `__dirname/..` kök yolu bozulur; yeniden
+    çalıştırmak gerekirse geri taşınır.
+- **Strateji dosyaları (33):** Şimdilik hiçbiri taşınmasın. EXP-013c'nin yeniden testi 16 aileyi kullanıyor.
+  Faz 2 bitince kalanlar arşive.
+- **`public/`:** Backend 3000 portunda bunu sunuyor (eski arayüz, `src/app.ts` `express.static`). Gerçek
+  arayüz Vite (5173). Öneri: Faz 1'de statik sunum ve `public/` kaldırılsın.
+- **Başlatıcı:** Kökteki `NexusTrade Baslat.exe` git'te. Çalışması için yanındaki `.dll`,
+  `.deps.json` ve `.runtimeconfig.json` dosyaları da gerekiyor, ama onlar git'te değil; temiz bir klonda
+  çalışmaz. Karar gerekiyor: ya dördü birlikte git'e girsin, ya hepsi çıkarılıp
+  `dotnet build tools/NexusTradeLauncher` ile üretilsin.
+- **Yapıldı:** Başlatıcının `bin/`, `obj/` ve boş `NuGet/` klasörleri `.gitignore`'a eklendi.
 
 ### Faz 1 · Tek ölçüm hattı
 
@@ -106,7 +128,13 @@ sabitlendi**; o tarihten bugüne 5,5 aylık veri bu adaylar için gerçekten gö
    yeni çekirdekte, 12 Haziran sonrası veride.
 2. Tarayıcı V2 HTF Onay: 8 işlem karar vermek için yetersiz. 380 sembolde 8 Temmuz sonrası veride kaç işlem
    ürettiğine ve sonucuna bak.
-3. Bunlardan hiçbiri geçmezse yeni hipotezler. Ama her yeni hipotez önce kayda yazılır.
+3. Risk filtreli iç içe strateji seçici ([EXP-013c](arastirma/DENEY-KAYDI.md)): 14 kör pencerenin 13'ünde
+   pozitif ama hiç ileriye dönük test edilmedi. 14 Haziran'da seçilen kuralı sabitleyip sonrasındaki veride
+   çalıştır. Aynı anda en fazla 3 aday kuralı gereği 1 veya 2 bitince başlar.
+4. Bunlardan hiçbiri geçmezse yeni hipotezler. Ama her yeni hipotez önce kayda yazılır.
+
+Harmonik sonuçlarına güvenmeden önce F1-6 altın testi, Harmonik Portföy'ün backtest'i (%27-32 kazanma) ile
+paper sonucu (%11.7 kazanma) arasındaki farkı açıklamalı ([EXP-016](arastirma/DENEY-KAYDI.md)).
 
 **Kapı:** Bir aday "ileriye dönük teste hazır" kriterlerini geçiyor.
 

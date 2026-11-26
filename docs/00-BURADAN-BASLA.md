@@ -123,7 +123,11 @@ dolmadan bırakılmamasını şart koşuyor.
     "Süreyi uzat" var (F0-4). Bitiş tarihleri geçtiği için beşi de "Kapanıyor" durumuna geçti.
   - Faz 0: `npm run backup:data` yedekleme script'i (F0-2). `.env.example`'daki gerçek görünümlü
     anahtarlar kaldırıldı; `.env` hâlâ eski değerleri kullanıyorsa backend açılışta uyarır (F0-5).
-- **Commit edilmemiş:** yukarıdaki değişikliklerin hepsi.
+  - Faz 0: deney kaydı tamamlandı, EXP-011 ile EXP-018 eklendi (F0-7). İki önemli not:
+    - Harmonik Portföy'ün backtest'i ile paper sonucu arasındaki fark açıklanmadı.
+    - Risk filtreli iç içe seçici (EXP-013c) hiç ileriye dönük test edilmedi.
+  - F0-6 envanteri ve taşıma önerisi yol haritasında; taşıma yapılmadı.
+- **Commit:** `chore/faz0-toparlanma` dalında (yerel). GitHub'a gönderilmedi.
 - **Açık işler:**
   - Backend yeniden başlatılmadı; Durdur/Uzat düğmeleri ve `.env` uyarısı yeniden başlatınca devreye girer.
   - Yedekleme zamanlayıcıya (Windows Görev Zamanlayıcı) bağlanmadı.
@@ -131,4 +135,4 @@ dolmadan bırakılmamasını şart koşuyor.
   - Backend'in ara sıra çökmesi (Windows kodu 0xC0000409) ayrı bir oturumda inceleniyor,
     dal `fix/backend-native-crash-diagnostics`.
   - `main` dalı GitHub'da 31 Mayıs'ta kalmış; sonraki commit'ler sadece bu bilgisayarda.
-- **Sıradaki adım:** F0-1 commit/push, ardından F0-6 arşivleme ve F0-7 deney kaydı.
+- **Sıradaki adım:** Dalı GitHub'a göndermek (F0-1), F0-6 taşıma kararı, ardından Faz 1.
