@@ -68,7 +68,7 @@ Madde numaralarındaki K/Y/O kodları [01-SISTEM-INCELEMESI.md](01-SISTEM-INCELE
 
 | No | İş | Bulgu | Efor | Durum (2026-11-26) |
 |---|---|---|---|---|
-| F0-1 | Bekleyen değişiklikleri commit et, dalları GitHub'a gönder | K-4, O-2 | S | Dal GitHub'da (`chore/faz0-toparlanma`, 2026-11-27); `main`'e birleştirme bekliyor |
+| F0-1 | Bekleyen değişiklikleri commit et, dalları GitHub'a gönder | K-4, O-2 | S | Bitti: PR #1 ile `main`'e birleştirildi (2026-11-27) |
 | F0-2 | `data/` için günlük yedekleme script'i ve zamanlayıcı (mum önbelleği hariç) | K-4 | S | Script hazır (`npm run backup:data`); zamanlayıcı kurulmadı |
 | F0-3 | Negatif PnL'yi eksi işaretiyle göster (5 yer) | K-5 | S | Bitti |
 | F0-4 | Paper portföylere "Durdur"; bitiş tarihinde yeni işlem açmayı kes; kaybedenleri durdur | K-6 | M | Kod bitti; backend yeniden başlatılınca düğmeler görünür. Kaybedenleri durdurmak senin kararın |

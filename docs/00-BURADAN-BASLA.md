@@ -115,14 +115,14 @@ dolmadan bırakılmamasını şart koşuyor.
 
 - **Faz:** Faz 0, Toparlanma
 - **Bu oturumda yapılanlar:**
-  - `chore/faz0-toparlanma` dalı GitHub'a gönderildi; `main`'e birleştirmek için PR #1 açıldı
-    (https://github.com/Analysis-King/NexusTrade/pull/1). Birleştirilmedi.
+  - `chore/faz0-toparlanma` dalı GitHub'a gönderildi ve PR #1 ile `main`'e birleştirildi
+    (https://github.com/Analysis-King/NexusTrade/pull/1). GitHub'daki `main` artık güncel.
   - F0-6: kapanmış deneylerin 48 script'i `scripts/archive/` altına taşındı; hepsi repo kökünden
     çalışmaya devam ediyor. Testler (39) ve tip kontrolü geçiyor.
 - **Açık işler:** 2026-11-26'daki liste geçerli (backend yeniden başlatılmadı, yedekleme zamanlayıcısı,
-  `.env` anahtarları). Ek olarak: PR #1'i birleştirmek, başlatıcı dosyaları kararı (`.exe` + `.dll` +
-  iki `.json` git'e mi, yoksa hepsi dışarı mı).
-- **Sıradaki adım:** PR #1'i birleştirmek, ardından Faz 1.
+  `.env` anahtarları). Ek olarak: başlatıcı dosyaları kararı (`.exe` + `.dll` + iki `.json` git'e mi,
+  yoksa hepsi dışarı mı).
+- **Sıradaki adım:** Faz 1.
 
 ### 2026-11-26
 
