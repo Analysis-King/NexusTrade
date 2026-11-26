@@ -127,12 +127,13 @@ dolmadan bırakılmamasını şart koşuyor.
     - Harmonik Portföy'ün backtest'i ile paper sonucu arasındaki fark açıklanmadı.
     - Risk filtreli iç içe seçici (EXP-013c) hiç ileriye dönük test edilmedi.
   - F0-6 envanteri ve taşıma önerisi yol haritasında; taşıma yapılmadı.
-- **Commit:** `chore/faz0-toparlanma` dalında (yerel). GitHub'a gönderilmedi.
+- **Commit:** `chore/faz0-toparlanma` dalında; 2026-11-27'de GitHub'a gönderildi, `main`'e birleştirilmedi.
 - **Açık işler:**
   - Backend yeniden başlatılmadı; Durdur/Uzat düğmeleri ve `.env` uyarısı yeniden başlatınca devreye girer.
   - Yedekleme zamanlayıcıya (Windows Görev Zamanlayıcı) bağlanmadı.
   - `.env`'deki SESSION_SECRET / ENCRYPTION_KEY yenilenmeli (uyarı çıkarsa).
   - Backend'in ara sıra çökmesi (Windows kodu 0xC0000409) ayrı bir oturumda inceleniyor,
     dal `fix/backend-native-crash-diagnostics`.
-  - `main` dalı GitHub'da 31 Mayıs'ta kalmış; sonraki commit'ler sadece bu bilgisayarda.
-- **Sıradaki adım:** Dalı GitHub'a göndermek (F0-1), F0-6 taşıma kararı, ardından Faz 1.
+  - GitHub'daki `main` hâlâ 31 Mayıs'ta; Haziran'dan bu yana yapılan her şey `chore/faz0-toparlanma`
+    dalında. `main`'e birleştirmek için pull request açılmalı.
+- **Sıradaki adım:** Dalı `main`'e birleştirmek (F0-1), F0-6 taşıma kararı, ardından Faz 1.
