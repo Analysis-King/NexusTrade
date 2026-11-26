@@ -119,10 +119,12 @@ dolmadan bırakılmamasını şart koşuyor.
     (https://github.com/Analysis-King/NexusTrade/pull/1). GitHub'daki `main` artık güncel.
   - F0-6: kapanmış deneylerin 48 script'i `scripts/archive/` altına taşındı; hepsi repo kökünden
     çalışmaya devam ediyor. Testler (39) ve tip kontrolü geçiyor.
+  - F0-6: başlatıcının `.exe`, `.dll` ve iki `.json` dosyası birlikte git'e eklendi (yeniden derleme
+    adımları yol haritasında).
+  - Bu iki iş PR #2'de (https://github.com/Analysis-King/NexusTrade/pull/2).
 - **Açık işler:** 2026-11-26'daki liste geçerli (backend yeniden başlatılmadı, yedekleme zamanlayıcısı,
-  `.env` anahtarları). Ek olarak: başlatıcı dosyaları kararı (`.exe` + `.dll` + iki `.json` git'e mi,
-  yoksa hepsi dışarı mı).
-- **Sıradaki adım:** Faz 1.
+  `.env` anahtarları).
+- **Sıradaki adım:** PR #2'yi birleştirmek, ardından Faz 1.
 
 ### 2026-11-26
 
