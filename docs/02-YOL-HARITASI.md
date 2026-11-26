@@ -73,25 +73,26 @@ Madde numaralarındaki K/Y/O kodları [01-SISTEM-INCELEMESI.md](01-SISTEM-INCELE
 | F0-3 | Negatif PnL'yi eksi işaretiyle göster (5 yer) | K-5 | S | Bitti |
 | F0-4 | Paper portföylere "Durdur"; bitiş tarihinde yeni işlem açmayı kes; kaybedenleri durdur | K-6 | M | Kod bitti; backend yeniden başlatılınca düğmeler görünür. Kaybedenleri durdurmak senin kararın |
 | F0-5 | `.env.example` içindeki değerleri yer tutucuyla değiştir, kullanılan secret'ları yenile | K-3 | S | Örnek dosya temizlendi; `.env`'deki değerleri yenilemek sende |
-| F0-6 | Kullanılmayan strateji ve script'leri arşive taşı; `public/` ve başlatıcı binary'lerini temizle | O-1 | M | Envanter ve öneri hazır (aşağıda); taşıma onay bekliyor |
+| F0-6 | Kullanılmayan strateji ve script'leri arşive taşı; `public/` ve başlatıcı binary'lerini temizle | O-1 | M | Script'ler taşındı (2026-11-27); `public/` ve başlatıcı dosyaları kararı bekliyor |
 | F0-7 | Deney kaydındaki eski deneyleri tamamla (Haziran ve Temmuz raporlarından) | Y-3 | S | Bitti (EXP-011 - EXP-018) |
 | F0-8 | Backend çökmesini kapat (ayrı oturumda devam ediyor) | K-2 | M | Ayrı oturumda |
 
 **Kapı:** Her şey yedekli ve GitHub'da. Çalışan her bot ve portföy arayüzde görünüyor ve durdurulabiliyor.
 Ekrandaki sayılar doğru.
 
-#### F0-6 envanteri ve önerisi (2026-11-26, uygulanmadı)
+#### F0-6 envanteri ve önerisi (2026-11-26; script kısmı 2026-11-27'de uygulandı)
 
 - **Script'ler (65):**
-  - 12'si sistem tarafından kullanılıyor: `package.json`, supervisor, başlatıcı.
-  - Faz 1-2 için gerekenler:
+  - `scripts/` altında kalan 12 dosya ve `lib/` sistemin parçası: `package.json` komutları, supervisor,
+    başlatıcı ve `test-pool.ps1` (worker havuzu deneme aracı).
+  - Yine `scripts/` altında kalan Faz 1-2 araçları:
     - `nested_strategy_selector.cjs` + `strategy_portfolio_blend.cjs` (EXP-013c yeniden testi)
     - `orphan_market_reader_walk_forward*.cjs` (adı yanıltıcı; "Strategy Walk-Forward" raporlarını üreten genel
       walk-forward)
     - `harmonic_exit_optimizer.cjs` (F1-6 karşılaştırması)
-  - Kalan ~45 script kapanmış deneylerin araştırma araçları (EXP-011 - EXP-018). Öneri: `scripts/archive/`
-    altına taşınsın ve bakımı yapılmasın. Taşınınca içlerindeki `__dirname/..` kök yolu bozulur; yeniden
-    çalıştırmak gerekirse geri taşınır.
+  - **Yapıldı:** kalan 48 script, kapanmış deneylerin araçları, `scripts/archive/` altına taşındı. Bakımı
+    yapılmıyor. Kök klasörü kendi konumundan bulan 13'ünün yolu düzeltildi; hepsi eskisi gibi repo kökünden
+    çalışır (bkz. `scripts/archive/README.md`).
 - **Strateji dosyaları (33):** Şimdilik hiçbiri taşınmasın. EXP-013c'nin yeniden testi 16 aileyi kullanıyor.
   Faz 2 bitince kalanlar arşive.
 - **`public/`:** Backend 3000 portunda bunu sunuyor (eski arayüz, `src/app.ts` `express.static`). Gerçek

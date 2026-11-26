@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const DAY = 86_400_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

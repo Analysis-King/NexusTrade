@@ -183,6 +183,8 @@ Efor: **S** = birkaç saat, **M** = 1-3 gün, **L** = 1 hafta ve üstü.
   sarmalayıcılar kullanılıyor.
 - **Öneri:** `python/strategies/_arsiv/` ve `scripts/_arsiv/` klasörleri; kullanılmayanları oraya taşı
   (silme, deney kaydında adı geçsin). Başlatıcı derleme çıktılarını `.gitignore`'a ekle.
+- **Durum (2026-11-27):** 48 araştırma script'i `scripts/archive/` altına taşındı, derleme çıktıları
+  `.gitignore`'da. Strateji dosyaları Faz 2'ye kadar yerinde; `public/` ve başlatıcı dosyaları bekliyor.
 
 ### O-2 · Dallar
 

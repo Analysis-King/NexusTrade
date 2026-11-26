@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DAY = 86_400_000;
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const OUT_JSON = path.join(ROOT, 'data', 'most_red_retest_50_symbols_1h_90d_20260613.json');
 const OUT_MD = path.join(ROOT, 'data', 'most_red_retest_50_symbols_1h_90d_20260613.md');
 const INTERVAL = '1h';

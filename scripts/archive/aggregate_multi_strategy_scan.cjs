@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const ROOT = path.resolve(__dirname, '..');
+const ROOT = path.resolve(__dirname, '..', '..');
 const DATA = path.join(ROOT, 'data');
 const OUTPUT_STEM = process.argv[2] || 'multi_strategy_50_symbol_comparison_20260613';
 
