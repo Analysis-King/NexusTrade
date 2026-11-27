@@ -108,13 +108,14 @@ Ekrandaki sayılar doğru.
 
 | No | İş | Bulgu | Efor |
 |---|---|---|---|
-| F1-1 | Tek yürütme çekirdeği: giriş, SL/TP/gap kuralları, maliyetler tek yerde (Python); backtest ve paper aynı kodu kullanır | Y-1 | L |
+| F1-1 | Tek yürütme çekirdeği: giriş, SL/TP/gap kuralları, maliyetler tek yerde (Python); backtest ve paper aynı kodu kullanır. **Başladı (2026-11-27):** çekirdek `python/workers/execution_core.py`. Backtest ve yeni `paper_step` worker komutu onu kullanıyor; 9 regresyon senaryosunda backtest sonucu değişiklik öncesiyle birebir aynı. Paper botun (`src/bot/runner.ts`) `paper_step`'e bağlanması kaldı; bugün kendi SL/TP kodunu kullanıyor (gap'te SL fiyatından çıkış, sinyal mumunun kapanışından giriş, ters sinyalde her zaman çıkış) | Y-1 | L |
 | F1-2 | Risk bazlı pozisyon büyüklüğü; sonuçların R cinsinden raporlanması | Y-4 | M |
 | F1-3 | Maliyet modeli: komisyon, kayma, fonlama, likidasyon | Y-2 | M |
 | F1-4 | Standart deney raporu (protokoldeki metrikler, pencere tablosu, görülmemiş veri ayrımı) | Y-3 | M |
 | F1-5 | Her backtest çalıştırmasının deney kaydına otomatik satır yazması | Y-3 | S |
-| F1-6 | "Altın test": sabit mumlarda backtest ve paper aynı işlemleri üretiyor mu. Harmonik farkın ana nedeni bulundu (EXP-016); motorlar arasındaki bilinen farklar (açık pozisyonda SL/TP güncelleme, 600 mum penceresi, kaçan döngüler) test edilmeyi bekliyor. Portföy replay'i giriş mumunda kapanan işlemleri dahil etmeli | O-5 | M |
+| F1-6 | "Altın test": sabit mumlarda backtest ve paper aynı işlemleri üretiyor mu. **Var (2026-11-27):** `tests/executionParity.test.ts` aynı mumları bir kez `backtest`, bir kez mum mum `paper_step` ile çalıştırıyor; 6 senaryoda işlemler ve sermaye eğrisi birebir aynı. Paper stratejiye son 500 mumu verdiği için backtest de `max_history_bars: 500` ile çalışıyor. Harmonik farkın ana nedeni bulundu (EXP-016). Kalan: kaçan döngüler (bilgisayar kapalıyken) | O-5 | M |
 | F1-7 | Üç ayrı paper portföy script'i yerine çekirdeği kullanan tek "çok sembollü paper" modu | Y-1 | M |
+| F1-8 | Stratejilerde bekleme sayacı mum sırasıyla (`len(candles) - 1`) tutuluyor. 500 mumluk paper penceresinde bu sayı 499'da sabit kalıyor, bekleme süresi dolmuyor ve bot ilk sinyalden sonra backend yeniden başlayana kadar yeni giriş yapmıyor. 15 strateji etkileniyor (DEMA, Donchian, QM-Wolfe dahil); EXP-004'ün tek işlemde kalması ve qwm botlarının sonucu bundan. Düzeltme: sayacı mum zamanına bağlamak; altın teste pencereli ve tam geçmiş arasındaki farkı ölçen kontrol eklemek. Faz 2'deki yeniden testten önce yapılmalı | O-5 | M |
 
 **Kapı:** Altın test geçiyor.
 

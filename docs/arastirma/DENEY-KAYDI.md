@@ -31,7 +31,7 @@ olduğundan iyi görünür.
 | EXP-001 | Haziran strateji taraması (20+ aile) | Backtest | 2026-06 | En iyi adaylar günlük %0.12-0.42; çoğu sembolde genelleşmiyor | Geçti (3 aday) |
 | EXP-002 | Adaptif strateji seçici | Backtest | 2026-06 | Kör holdout'ta günlük −%0.12 ile −%0.40 | Kaldı |
 | EXP-003 | Adaptif rejim yönlendirici | Backtest | 2026-06 | 20 profilden 0-2'si kârlı | Kaldı |
-| EXP-004 | Haziran adaylarının ileriye dönük testi | Paper | 2026-06 → 07-02 | Her aday 1 işlem yaptı, test bırakıldı | Yarım kaldı |
+| EXP-004 | Haziran adaylarının ileriye dönük testi | Paper | 2026-06 → 07-02 | Her aday 1 işlem yaptı, test bırakıldı; tek işlemin sebebi paper bottaki bekleme sayacı hatası | Yarım kaldı |
 | EXP-005 | Harmonik Portföy (12x) | Paper portföy | 2026-07-19 → | 249 işlem, kazanma %11.7, **−%46.6** | Kaldı; dayandığı backtest geçersiz (EXP-016) |
 | EXP-006 | Harmonik QualityTarget 4x / 10x | Paper portföy | 2026-07-19 → | 123 işlem, kazanma %10.6, **−%42.8 / −%94.8** | Kaldı; dayandığı backtest geçersiz (EXP-016) |
 | EXP-007 | Harmonik Tarayıcı V2 | Paper portföy | 2026-07-08 → | 183 işlem, kazanma %18.6, **−%16.2** | Kaldı |
@@ -95,6 +95,12 @@ ettikleri için rakamlar değişebilir.
 - **Durum:** Yarım kaldı
 - **Tarih:** 2026-06-12 → 2026-07-02
 - **Sonuç:** TRXUSDT ve ZECUSDT botları birer işlem yaptı, sonra bırakıldı.
+- **Tek işlemin sebebi (2026-11-27):** Paper bot stratejiye son 500 mumu verir. Stratejiler bekleme
+  sayacını mum sırasıyla (`len(candles) - 1`) tutuyor; pencere dolunca bu sayı 499'da sabit kalıyor ve
+  bekleme süresi hiç dolmuyor. Bot ilk sinyalden sonra backend yeniden başlayana kadar yeni giriş yapamıyor.
+  DEMA botu için kesin (`dema_cross_trend.py` 31 Mayıs'tan beri değişmedi). Donchian dosyasının Haziran
+  sürümü git'te yok, bugünkü sürümde aynı hata var. Aynı mumlarda tam geçmişle 10 ve 20 işlem çıkan DEMA ve
+  Donchian, 500 mumluk pencereyle 1'er işlem üretiyor. Yani bu test stratejileri ölçmedi. Düzeltme: F1-8.
 - **Not:** Bu adayların parametreleri 12 Haziran'da sabitlendi. O tarihten sonraki veri onlar için gerçekten
   görülmemiş veri; Faz 2'de ilk yeniden test edilecekler bunlar ([02-YOL-HARITASI.md](../02-YOL-HARITASI.md)).
 
@@ -153,6 +159,10 @@ ettikleri için rakamlar değişebilir.
 - **Sonuç (2026-11-26):** qwm3 kapanan işlem yok; qwm5 −61 $ / 1000 $.
 - **Not:** Aynı strateji dosyası 13 Haziran'da 20-50 sembolde 30'dan fazla varyantla taranmıştı (EXP-012);
   hiçbir varyant ortalamada günlük %0.02'yi geçmedi. Bu botların avantajı olduğuna dair kayıtlı bir kanıt yok.
+- **Paper sonucu stratejiyi ölçmüyor (2026-11-27):** `qm_wolfe_patterns.py` de bekleme sayacını mum
+  sırasıyla tutuyor (EXP-004'teki hata). Botlar backend her başladığında en fazla bir giriş yapabiliyor.
+  Log da bunu gösteriyor: backend 26 Kasım 22:26'da başladı, qwm5 22:55'te girdi; 27 Kasım 00:15'te yeniden
+  başladı, qwm5 01:05'te girdi; sonra yeni giriş yok (saatler UTC).
 - **Sonraki adım:** Durdurulması önerilir; ya da protokole göre hipotez ve bitiş kriteri yazılsın.
 
 ### EXP-011 · Orphan Market Reader

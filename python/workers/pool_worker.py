@@ -38,11 +38,20 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _PYROOT = os.path.abspath(os.path.join(_HERE, '..'))
 if _PYROOT not in sys.path:
     sys.path.insert(0, _PYROOT)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from indicators.indicators import (  # noqa: E402
     calc_sma, calc_ema_arr, calc_ema,
     calc_rsi, calc_rsi_arr, calc_bb, calc_bb_arr,
     calc_macd, calc_atr,
+)
+from execution_core import (  # noqa: E402
+    ExecutionCore,
+    _apply_risk_update,
+    _bool_param,
+    _float_param,
+    _stop_or_target_price,
 )
 
 STRATEGIES_DIR = os.path.join(_PYROOT, 'strategies')
@@ -115,6 +124,8 @@ class PoolWorker:
             return self._draw(req)
         if cmd == 'backtest':
             return self._backtest(req)
+        if cmd == 'paper_step':
+            return self._paper_step(req)
         if cmd == 'optimize_harmonic':
             return self._optimize_harmonic(req)
         raise ValueError(f"Bilinmeyen komut: {cmd}")
@@ -269,6 +280,52 @@ class PoolWorker:
             raise RuntimeError(f"Instance yuklu degil: {instance_id}")
 
         return self._run_universal_backtest(inst['module'], inst['config'], req)
+
+    def _paper_step(self, req):
+        """
+        Paper bot icin tek mum adimi. Backtest dongusunun bir turunun aynisi: ayni cekirdek,
+        ayni sira. Durum (pozisyon, bekleyen sinyal, sermaye) istekle gelir, cevapla doner;
+        worker'da tutulmaz, boylece yeniden baslatma sonrasi kaldigi yerden devam edilir.
+
+        req: instance, candle (yeni kapanan mum), candles (bu mum dahil gecmis), state (ilk
+        adimda null), initial_capital / fee_bps / slippage_bps / fill_model / start_time,
+        istege bagli params, footprint, footprints, include_drawings.
+        """
+        instance_id = req['instance']
+        inst = self.instances.get(instance_id)
+        if inst is None:
+            raise RuntimeError(f"Instance yuklu degil: {instance_id} — once 'load' gonderin")
+        module = inst['module']
+        config = inst['config']
+        params = {**(config if isinstance(config, dict) else {}), **(req.get('params') or {})}
+        params = _resolve_module_config(module, params)
+
+        candle = req['candle']
+        candles = req.get('candles') or [candle]
+        core = ExecutionCore.from_request(params, req).load_state(req.get('state'))
+        core.open_bar(candle)
+        signal_data = self._run_on_candle(
+            module,
+            config,
+            candle,
+            candles,
+            core.portfolio(),
+            include_drawings=bool(req.get('include_drawings', False)),
+            footprints_data=req.get('footprints') or [],
+            footprint_data=req.get('footprint'),
+        )
+        core.close_bar(candle, signal_data, has_next_bar=True)
+        return {
+            'state': core.to_state(),
+            'opened': core.opened,
+            'closed': core.trades,
+            'position': core.position,
+            'equity': core.equity,
+            'mark': core.mark(float(candle['c'])),
+            'signal': signal_data.get('signal') or 'hold',
+            'meta': signal_data.get('meta') or {},
+            'drawings': signal_data.get('drawings') or [],
+        }
 
     def _optimize_harmonic(self, req):
         strategy_file = req.get('strategy_file') or 'pine_harmonic_patterns.py'
@@ -580,39 +637,21 @@ class PoolWorker:
         if len(candles) < 2:
             return _empty_backtest(req, candles)
 
-        initial = float(req.get('initial_capital') or 1000)
-        fee_bps = float(req.get('fee_bps') or 0)
-        slippage_bps = float(req.get('slippage_bps') or 0)
-        fill_model = req.get('fill_model') or 'pessimistic_ohlc'
         params = {**(config if isinstance(config, dict) else {}), **(req.get('params') or {})}
         params = _resolve_module_config(module, params)
-        start_time = int(req.get('start_time') or 0)
-        fee_rate = fee_bps / 10000.0
-        slip_rate = slippage_bps / 10000.0
-        max_position = _float_param(params, 'max_position_usd', None)
-        max_position_pct = _float_param(params, 'max_position_pct', None)
-        leverage = max(1.0, _float_param(params, 'leverage', 1.0) or 1.0)
-        default_sl = _float_param(params, 'stop_loss_pct', None)
-        default_tp = _float_param(params, 'take_profit_pct', None)
-        stop_loss_mode = str(params.get('stop_loss_mode') or 'strategy')
-        stop_loss_target_ratio = _float_param(params, 'stop_loss_target_ratio', 1.0) or 1.0
-        same_candle_mode = str(params.get('same_candle_tp_sl') or 'stop_first')
-        stop_trigger_mode = str(params.get('stop_trigger_mode') or 'touch').strip().lower()
-        if stop_trigger_mode not in ('touch', 'close'):
-            stop_trigger_mode = 'touch'
-        exit_on_opposite_signal = _bool_param(params, 'exit_on_opposite_signal', False)
+        core = ExecutionCore.from_request(params, req)
+        initial = core.initial
+        fill_model = core.fill_model
+        default_sl = core.default_sl
+        default_tp = core.default_tp
         observation_horizon = max(1, int(_float_param(params, 'observation_horizon_bars', 10) or 10))
         observation_sl = _float_param(params, 'observation_stop_loss_pct', default_sl)
         observation_tp = _float_param(params, 'observation_take_profit_pct', default_tp)
         report_period_days = _float_param(params, 'report_period_days', None)
-        min_reward_risk = max(0.0, _float_param(params, 'min_reward_risk', 0.0) or 0.0)
+        # Paper bot stratejiye son N mumu verir (runner.ts MAX_CANDLE_BUFFER). Ayni pencereyle
+        # olcmek icin max_history_bars verilebilir; 0 = tum gecmis (eski davranis).
+        max_history_bars = max(0, int(req.get('max_history_bars') or 0))
 
-        equity = initial
-        realized_pnl = 0.0
-        position = None
-        pending_signal = None
-        pending_exit = None
-        trades = []
         observations = []
         equity_curve = []
         peak = initial
@@ -628,113 +667,23 @@ class PoolWorker:
 
         for i, candle in enumerate(candles):
             history.append(candle)
+            if max_history_bars and len(history) > max_history_bars:
+                del history[0]
             current_footprint = footprints_by_t.get(int(candle.get('t') or 0))
             if current_footprint is not None:
                 footprint_history.append(current_footprint)
-            if pending_exit is not None and position is not None:
-                equity, realized_pnl = _close_position(
-                    position, candle.get('o', candle['c']), candle['t'], pending_exit,
-                    fee_rate, slip_rate, equity, realized_pnl, trades
-                )
-                position = None
-            pending_exit = None
 
-            if pending_signal is not None:
-                signal = pending_signal.get('signal') or 'hold'
-                if signal == 'close':
-                    if position is not None:
-                        equity, realized_pnl = _close_position(
-                            position, candle.get('o', candle['c']), candle['t'], 'signal',
-                            fee_rate, slip_rate, equity, realized_pnl, trades
-                        )
-                        position = None
-                    pending_signal = None
-                else:
-                    wanted_side = 'long' if signal == 'buy' else 'short'
-                    if position is not None and position['side'] != wanted_side:
-                        if exit_on_opposite_signal:
-                            equity, realized_pnl = _close_position(
-                                position, candle.get('o', candle['c']), candle['t'], 'signal',
-                                fee_rate, slip_rate, equity, realized_pnl, trades
-                            )
-                            position = None
-                        else:
-                            pending_signal = None
-                    if pending_signal is not None and position is None:
-                        if max_position_pct is not None and max_position_pct > 0:
-                            allocation_pct = min(100.0, max_position_pct)
-                            position_cap = equity * allocation_pct / 100.0 * leverage
-                        else:
-                            position_cap = initial * leverage
-                        if max_position is not None and max_position > 0:
-                            position_cap = min(position_cap, max_position)
-                        position = _open_position(
-                            wanted_side,
-                            candle,
-                            equity,
-                            position_cap,
-                            fee_rate,
-                            slip_rate,
-                            pending_signal.get('sl_pct') if pending_signal.get('sl_pct') is not None else default_sl,
-                            pending_signal.get('tp_pct') if pending_signal.get('tp_pct') is not None else default_tp,
-                            pending_signal.get('sl_price'),
-                            pending_signal.get('tp_price'),
-                            stop_loss_mode,
-                            stop_loss_target_ratio,
-                            min_reward_risk,
-                            pending_signal.get('meta'),
-                            price_key='o',
-                        )
-                        if position is not None:
-                            equity -= position['entry_fee']
-                    elif pending_signal is not None and position is not None and position['side'] == wanted_side:
-                        _apply_risk_update(
-                            position,
-                            pending_signal,
-                            candle.get('o', candle['c']),
-                            stop_loss_mode,
-                            stop_loss_target_ratio,
-                            min_reward_risk,
-                            fee_rate,
-                            slip_rate,
-                        )
-            pending_signal = None
-
-            if position is not None:
-                exit_price, reason = _stop_or_target_price(
-                    position,
-                    candle,
-                    fill_model,
-                    same_candle_mode,
-                    stop_trigger_mode,
-                )
-                if exit_price is not None and fill_model == 'pessimistic_ohlc':
-                    equity, realized_pnl = _close_position(
-                        position, exit_price, candle['t'], reason, fee_rate, slip_rate,
-                        equity, realized_pnl, trades
-                    )
-                    position = None
-                elif exit_price is not None:
-                    pending_exit = reason
-
-            portfolio = {
-                'usdt': equity,
-                'has_position': position is not None,
-                'pnl': realized_pnl,
-            }
-            if position is not None:
-                portfolio['side'] = 'BUY' if position['side'] == 'long' else 'SELL'
+            core.open_bar(candle)
 
             signal_data = self._run_on_candle(
                 module,
                 config,
                 candle,
                 history,
-                portfolio,
+                core.portfolio(),
                 footprints_data=footprint_history,
                 footprint_data=current_footprint,
             )
-            signal = signal_data.get('signal') or 'hold'
             for observation in signal_data.get('observations') or []:
                 evaluated = _evaluate_observation(
                     observation,
@@ -744,50 +693,44 @@ class PoolWorker:
                     observation_sl,
                     observation_tp,
                     fill_model,
-                    same_candle_mode,
-                    slip_rate,
+                    core.same_candle_mode,
+                    core.slip_rate,
                 )
                 if evaluated is not None:
                     observations.append(evaluated)
 
-            if position is not None:
-                _apply_risk_update(position, signal_data, candle['c'], stop_loss_mode, stop_loss_target_ratio, min_reward_risk, fee_rate, slip_rate)
+            core.close_bar(candle, signal_data, has_next_bar=i < len(candles) - 1)
 
-            can_trade_now = start_time <= 0 or int(candle.get('t') or 0) >= start_time
-            if can_trade_now and signal in ('buy', 'sell', 'close') and i < len(candles) - 1:
-                pending_signal = signal_data
-
-            mark = equity + (_unrealized_pnl(position, candle['c']) if position is not None else 0.0)
+            mark = core.mark(candle['c'])
             peak = max(peak, mark)
             dd = 0.0 if peak <= 0 else (peak - mark) / peak * 100.0
             max_dd = max(max_dd, dd)
             equity_curve.append({'t': candle['t'], 'value': round(mark, 2)})
 
-        if position is not None:
+        if core.position is not None:
             last = candles[-1]
-            equity, realized_pnl = _close_position(
-                position, last['c'], last['t'], 'end_of_test', fee_rate, slip_rate,
-                equity, realized_pnl, trades
-            )
+            core.close_open_position(last, 'end_of_test')
             if equity_curve and equity_curve[-1]['t'] == last['t']:
-                equity_curve[-1]['value'] = round(equity, 2)
+                equity_curve[-1]['value'] = round(core.equity, 2)
             else:
-                equity_curve.append({'t': last['t'], 'value': round(equity, 2)})
+                equity_curve.append({'t': last['t'], 'value': round(core.equity, 2)})
 
+        trades = core.trades
         return {
             'engine': 'universal_on_candle',
             'execution': {
                 'signal_fill': 'next_open',
                 'fill_model': fill_model,
-                'same_candle_tp_sl': same_candle_mode,
-                'stop_trigger_mode': stop_trigger_mode,
-                'exit_on_opposite_signal': exit_on_opposite_signal,
+                'same_candle_tp_sl': core.same_candle_mode,
+                'stop_trigger_mode': core.stop_trigger_mode,
+                'exit_on_opposite_signal': core.exit_on_opposite_signal,
                 'report_period_days': report_period_days,
-                'max_position_pct': max_position_pct,
-                'leverage': leverage,
-                'start_time': start_time or None,
+                'max_position_pct': core.max_position_pct,
+                'leverage': core.leverage,
+                'start_time': core.start_time or None,
+                'max_history_bars': max_history_bars or None,
             },
-            'summary': _summary(initial, equity, trades, max_dd),
+            'summary': _summary(initial, core.equity, trades, max_dd),
             'trades': trades,
             'equity': equity_curve,
             'patterns': _side_stats(trades, initial),
@@ -818,27 +761,6 @@ def _resolve_module_config(module, config):
     if not isinstance(resolved, dict):
         raise TypeError('resolve_config(config) dict dondurmeli')
     return resolved
-
-
-def _float_param(params, key, fallback):
-    value = params.get(key) if isinstance(params, dict) else None
-    if value in (None, ''):
-        return fallback
-    try:
-        return float(value)
-    except Exception:
-        return fallback
-
-
-def _bool_param(params, key, fallback=False):
-    value = params.get(key) if isinstance(params, dict) else None
-    if value in (None, ''):
-        return fallback
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ('1', 'true', 'yes', 'evet', 'acik', 'on')
-    return bool(value)
 
 
 def _drawing_point(raw, candles, xloc='bar_time'):
@@ -1089,265 +1011,6 @@ def _score_harmonic_pattern(module, pattern, candles, config):
     else:
         pnl = entry - close
     return {'won': pnl > 0, 'r': pnl / risk}
-
-
-def _open_position(
-    side,
-    candle,
-    equity,
-    max_position,
-    fee_rate,
-    slip_rate,
-    sl_pct,
-    tp_pct,
-    sl_price=None,
-    tp_price=None,
-    stop_loss_mode='strategy',
-    stop_loss_target_ratio=1.0,
-    min_reward_risk=0.0,
-    meta=None,
-    price_key='c',
-):
-    notional = max(0.0, float(max_position or equity))
-    if notional <= 0:
-        return None
-    tp_requested = tp_pct is not None or tp_price is not None
-    raw_price = float(candle.get(price_key, candle['c']))
-    entry_price = raw_price * (1 + slip_rate if side == 'long' else 1 - slip_rate)
-    qty = 0.0 if entry_price <= 0 else notional / entry_price
-    entry_fee = notional * fee_rate
-    pos = {
-        'side': side,
-        'entry_time': candle['t'],
-        'entry_price': entry_price,
-        'qty': qty,
-        'notional': notional,
-        'entry_fee': entry_fee,
-        'sl': None,
-        'tp': None,
-        'meta': meta if isinstance(meta, dict) else {},
-    }
-    _apply_risk_update(
-        pos,
-        {
-            'sl_pct': sl_pct,
-            'tp_pct': tp_pct,
-            'sl_price': sl_price,
-            'tp_price': tp_price,
-        },
-        entry_price,
-        stop_loss_mode,
-        stop_loss_target_ratio,
-        min_reward_risk,
-        fee_rate,
-        slip_rate,
-    )
-    if tp_requested and pos.get('tp') is None:
-        return None
-    if not _tp_covers_entry_costs(pos, fee_rate, slip_rate):
-        return None
-    if not _reward_risk_ok(pos, min_reward_risk):
-        return None
-    return pos
-
-
-def _tp_covers_entry_costs(position, fee_rate, slip_rate):
-    return _tp_price_covers_costs(position, position.get('tp'), fee_rate, slip_rate)
-
-
-def _reward_risk_ok(position, minimum):
-    minimum = float(minimum or 0.0)
-    if minimum <= 0:
-        return True
-    entry = float(position.get('entry_price') or 0.0)
-    sl = position.get('sl')
-    tp = position.get('tp')
-    if entry <= 0 or sl is None or tp is None:
-        return True
-    risk = abs(entry - float(sl))
-    reward = abs(float(tp) - entry)
-    if risk <= 0 or reward <= 0:
-        return False
-    return reward / risk >= minimum
-
-
-def _tp_price_covers_costs(position, tp, fee_rate, slip_rate):
-    if tp is None:
-        return True
-
-    side = position['side']
-    qty = float(position.get('qty') or 0.0)
-    entry = float(position.get('entry_price') or 0.0)
-    if qty <= 0 or entry <= 0:
-        return False
-
-    raw_exit = float(tp)
-    exit_price = raw_exit * (1 - slip_rate if side == 'long' else 1 + slip_rate)
-    gross = (exit_price - entry) * qty if side == 'long' else (entry - exit_price) * qty
-    exit_fee = abs(exit_price * qty) * fee_rate
-    net_pnl = gross - float(position.get('entry_fee') or 0.0) - exit_fee
-    return net_pnl > 0
-
-
-def _apply_risk_update(position, signal_data, reference_price, stop_loss_mode='strategy', stop_loss_target_ratio=1.0, min_reward_risk=0.0, fee_rate=0.0, slip_rate=0.0):
-    if position is None or not isinstance(signal_data, dict):
-        return
-    side = position['side']
-    ref = float(reference_price)
-    entry = float(position.get('entry_price') or ref)
-
-    sl_price = signal_data.get('sl_price')
-    tp_price = signal_data.get('tp_price')
-
-    if tp_price is None and signal_data.get('tp_pct') is not None:
-        pct = float(signal_data['tp_pct']) / 100.0
-        tp_price = ref * (1 + pct if side == 'long' else 1 - pct)
-
-    mode = str(stop_loss_mode or 'strategy').lower()
-    if mode == 'target_ratio' and tp_price is not None:
-        distance = abs(float(tp_price) - entry)
-        ratio = max(0.1, float(stop_loss_target_ratio or 1.0))
-        if distance > 0:
-            sl_price = entry - distance * ratio if side == 'long' else entry + distance * ratio
-    elif mode == 'strategy':
-        if sl_price is None and signal_data.get('sl_pct') is not None:
-            pct = float(signal_data['sl_pct']) / 100.0
-            sl_price = ref * (1 - pct if side == 'long' else 1 + pct)
-    else:
-        if signal_data.get('sl_pct') is not None:
-            pct = float(signal_data['sl_pct']) / 100.0
-            sl_price = ref * (1 - pct if side == 'long' else 1 + pct)
-
-    next_sl = position.get('sl')
-    next_tp = position.get('tp')
-    changed = False
-    tp_valid = False
-    if tp_price is not None:
-        tp = float(tp_price)
-        tp_valid = (
-            ((side == 'long' and tp > entry) or (side == 'short' and tp < entry))
-            and _tp_price_covers_costs(position, tp, fee_rate, slip_rate)
-        )
-        if tp_valid:
-            next_tp = tp
-            changed = True
-
-    if sl_price is not None and (tp_price is None or tp_valid):
-        sl = float(sl_price)
-        if (side == 'long' and sl < ref) or (side == 'short' and sl > ref):
-            next_sl = sl
-            changed = True
-
-    if not changed:
-        return
-
-    candidate = {**position, 'sl': next_sl, 'tp': next_tp}
-    if not _reward_risk_ok(candidate, min_reward_risk):
-        return
-
-    position['sl'] = next_sl
-    position['tp'] = next_tp
-
-
-def _stop_or_target_price(
-    position,
-    candle,
-    fill_model='pessimistic_ohlc',
-    same_candle_mode='stop_first',
-    stop_trigger_mode='touch',
-):
-    side = position['side']
-    sl = position.get('sl')
-    tp = position.get('tp')
-    open_price = float(candle.get('o', candle['c']))
-    close_price = float(candle['c'])
-
-    if fill_model == 'close_next_open':
-        if side == 'long':
-            if sl is not None and close_price <= sl:
-                return sl, 'sl'
-            if tp is not None and close_price >= tp:
-                return tp, 'tp'
-        else:
-            if sl is not None and close_price >= sl:
-                return sl, 'sl'
-            if tp is not None and close_price <= tp:
-                return tp, 'tp'
-        return None, None
-
-    if side == 'long':
-        if stop_trigger_mode == 'touch' and sl is not None and open_price <= sl:
-            return open_price, 'sl'
-        if tp is not None and open_price >= tp:
-            return open_price, 'tp'
-        hit_sl = sl is not None and (
-            close_price <= sl if stop_trigger_mode == 'close' else candle['l'] <= sl
-        )
-        hit_tp = tp is not None and candle['h'] >= tp
-    else:
-        if stop_trigger_mode == 'touch' and sl is not None and open_price >= sl:
-            return open_price, 'sl'
-        if tp is not None and open_price <= tp:
-            return open_price, 'tp'
-        hit_sl = sl is not None and (
-            close_price >= sl if stop_trigger_mode == 'close' else candle['h'] >= sl
-        )
-        hit_tp = tp is not None and candle['l'] <= tp
-    if hit_sl and hit_tp:
-        if same_candle_mode == 'take_profit_first':
-            return tp, 'tp'
-        return (close_price if stop_trigger_mode == 'close' else sl), 'sl'
-    if hit_sl:
-        return (close_price if stop_trigger_mode == 'close' else sl), 'sl'
-    if hit_tp:
-        return tp, 'tp'
-    return None, None
-
-
-def _close_position(position, raw_exit_price, exit_time, reason, fee_rate, slip_rate, equity, realized_pnl, trades):
-    equity_before = equity
-    side = position['side']
-    exit_price = float(raw_exit_price) * (1 - slip_rate if side == 'long' else 1 + slip_rate)
-    qty = position['qty']
-    entry = position['entry_price']
-    gross = (exit_price - entry) * qty if side == 'long' else (entry - exit_price) * qty
-    exit_fee = abs(exit_price * qty) * fee_rate
-    fee_paid = position['entry_fee'] + exit_fee
-    net_after_exit_fee = gross - exit_fee
-    net_pnl = net_after_exit_fee - position['entry_fee']
-    equity += net_after_exit_fee
-    realized_pnl += net_pnl
-    pnl_pct = 0.0 if position['notional'] <= 0 else net_pnl / position['notional'] * 100.0
-    account_return_pct = 0.0 if equity_before <= 0 else net_pnl / equity_before * 100.0
-    trades.append({
-        'id': f"tr_{len(trades) + 1}",
-        'side': side,
-        'entryTime': position['entry_time'],
-        'entryPrice': round(entry, 8),
-        'slPrice': round(position['sl'], 8) if position.get('sl') is not None else None,
-        'tpPrice': round(position['tp'], 8) if position.get('tp') is not None else None,
-        'exitTime': exit_time,
-        'exitPrice': round(exit_price, 8),
-        'qty': round(qty, 8),
-        'notional': round(position['notional'], 4),
-        'grossPnl': round(gross, 4),
-        'netPnl': round(net_pnl, 4),
-        'pnlPct': round(pnl_pct, 4),
-        'accountReturnPct': round(account_return_pct, 4),
-        'feePaid': round(fee_paid, 4),
-        'reason': reason,
-        'meta': position.get('meta') or {},
-    })
-    return equity, realized_pnl
-
-
-def _unrealized_pnl(position, price):
-    if position is None:
-        return 0.0
-    side = position['side']
-    entry = position['entry_price']
-    qty = position['qty']
-    return (price - entry) * qty if side == 'long' else (entry - price) * qty
 
 
 def _summary(initial, final_equity, trades, max_dd):
