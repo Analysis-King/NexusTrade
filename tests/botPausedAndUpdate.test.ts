@@ -87,29 +87,8 @@ describe('Duraklatilmis bot', () => {
     expect(runner.state.candles.map((c) => c.t)).toEqual([100, 200, 300]);
   });
 
-  test('duraklatilmis botta acik pozisyon SL seviyesinde kapanir', async () => {
-    const storage = memoryStorage([botConfig('paused')]);
-    const runner = new BotRunner(botConfig('paused'), storage) as unknown as RunnerInternals;
-    runner.processCandle = async () => {
-      throw new Error('duraklatilmis botta strateji calismamali');
-    };
-    runner.state.position = {
-      botId: 'paused-test',
-      symbol: 'BTCUSDT',
-      side: 'BUY',
-      quantity: 1,
-      entryPrice: 100,
-      stopLossPrice: 95,
-      takeProfitPrice: 110,
-      openedAt: 1,
-    };
-
-    await runner.ingestClosedCandle(candle(100, { l: 94 }));
-
-    expect(runner.state.position).toBeNull();
-    expect(storage.savedTrades).toHaveLength(1);
-    expect(storage.savedTrades[0]!.pnlUsd).toBeLessThan(0);
-  });
+  // Duraklatilmis botta acik pozisyonun SL ile kapanmasi yurutme cekirdegi uzerinden
+  // calistigi icin gercek worker havuzuyla test ediliyor: tests/runnerParity.test.ts.
 });
 
 describe('BotManager.update', () => {

@@ -15,16 +15,21 @@
  *
  *   handleCandle(candle):
  *     1. Candle buffer'a ekle (son N tutuyoruz)
- *     2. Pozisyon varsa SL/TP kontrolü
- *     3. Risk guard kontrolü (günlük loss limit)
- *     4. WorkerPool.tick() — strateji sinyali al
- *     5. Sinyal buy/sell ise execution + state update + persist
- *     6. WS broadcast
+ *     2. Risk guard kontrolü (günlük loss limit)
+ *     3. WorkerPool.paperStep(): yürütme çekirdeği (python/workers/execution_core.py) bu mumu
+ *        backtest ile aynı kurallarla işler — bekleyen sinyal mumun açılışında, SL/TP mum içinde,
+ *        sonra strateji; yeni sinyal bir sonraki mumun açılışına kuyruklanır
+ *     4. Çekirdeğin açtığı/kapattığı pozisyonları işlem kaydına yaz, çekirdek durumunu sakla
+ *     5. WS broadcast
+ *
+ *   Yeniden başlatmada çekirdek durumu bot kaydından (paperCore) yüklenir; kapalıyken kaçan
+ *   mumlar (önceden yüklenen son 500 mum içinde kalanlar) sırayla işlenir.
  *
  *   stop(): stream aboneliğini bırak, instance'ı drop, state = stopped
  */
 
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { BotError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
 import { BinanceClient } from '../services/binance/client.js';
@@ -36,21 +41,20 @@ import {
   type CandleRaw,
   type FootprintLevelRaw,
   type FootprintRaw,
+  type PaperCorePosition,
+  type PaperCoreTrade,
+  type PaperStepResponse,
   type Signal,
 } from '../workers/types.js';
 import type { Storage } from '../storage/index.js';
 import type {
   BotConfig,
-  BotRiskConfig,
   Candle,
+  OrderSide,
+  PaperCoreSnapshot,
   Position,
   Trade,
 } from '../types/domain.js';
-import {
-  getExecutionProvider,
-  type ExecutionContext,
-  type ExecutionProvider,
-} from './execution.js';
 
 const log = createLogger('bot-runner');
 
@@ -95,7 +99,8 @@ export class BotRunner extends EventEmitter {
   private config: BotConfig;
   private state: BotRuntimeState;
   private storage: Storage;
-  private execution: ExecutionProvider;
+  /** Yürütme çekirdeğinin durumu; her paper adımında güncellenir ve bot kaydına yazılır. */
+  private core: PaperCoreSnapshot;
   private unsubscribeStream: (() => void) | null = null;
   private fallbackPollTimer: NodeJS.Timeout | null = null;
   private lastProcessedCandleTime: number | null = null;
@@ -115,7 +120,7 @@ export class BotRunner extends EventEmitter {
     super();
     this.config = { ...config };
     this.storage = storage;
-    this.execution = getExecutionProvider(config.mode);
+    this.core = config.paperCore ?? { state: emptyCoreState(config.capitalUsd, 0, 0), lastCandleT: null };
     this.state = {
       candles: [],
       position: null,
@@ -173,6 +178,9 @@ export class BotRunner extends EventEmitter {
     );
 
     try {
+      if (this.config.mode !== 'paper') {
+        throw new BotError('Canli mod henuz yok (Faz 4); bot sadece paper modda calisir');
+      }
       // 1. Strateji yükle
       await this.hydrateStateFromTrades();
       const loaded = await getWorkerPool().load(
@@ -183,9 +191,9 @@ export class BotRunner extends EventEmitter {
       this.needsFootprint = loaded.capabilities?.footprint === true;
 
       // 2. Tarihsel veri pre-fill (strateji ilk tick'ten itibaren ısınmış olsun)
-      const history = await this.preloadHistory();
-      this.state.candles = history.map(candleToRaw);
-      await this.reconcileHydratedPosition(history);
+      const history = (await this.preloadHistory()).map(candleToRaw);
+      await this.catchUpMissedCandles(history);
+      this.state.candles = history.slice(-MAX_CANDLE_BUFFER);
       this.lastProcessedCandleTime = this.state.candles.at(-1)?.t ?? null;
       this.pendingClosedCandles.clear();
       this.footprints = [];
@@ -404,7 +412,7 @@ export class BotRunner extends EventEmitter {
           // sonrasi yedek yoklama ayni mumlari tekrar ekler (tampon bozulur)
           // ve eski mumlar yeni sinyal gibi islenir.
           if (this.config.status === 'paused' && this.state.position) {
-            await this.protectPausedPosition(pending.candle);
+            await this.protectPausedPosition(pending.candle, pending.footprint);
           }
           this.lastProcessedCandleTime = pending.candle.t;
           continue;
@@ -490,13 +498,8 @@ export class BotRunner extends EventEmitter {
     this.resetDailyIfNeeded();
     this.state.lastTickAt = Date.now();
 
-    // 1. Açık pozisyon SL/TP kontrolü (fiyat seviyeleriyle)
-    if (this.state.position) {
-      const closed = await this.checkSlTp(candle);
-      if (closed) return; // pozisyon kapandı, bu mumda sinyal almıyoruz
-    }
-
-    // 2. Risk guard — günlük loss limit
+    // 1. Risk guard — günlük zarar limiti. Aşıldıysa bot duraklar; bu mumda açık pozisyon
+    //    sadece SL/TP ile korunur, bekleyen sinyal atılır.
     if (this.state.todayPnlUsd <= -this.config.risk.dailyMaxLossUsd) {
       log.warn(
         { botId: this.id, today: this.state.todayPnlUsd },
@@ -504,73 +507,19 @@ export class BotRunner extends EventEmitter {
       );
       await this.updateConfig({ status: 'paused' });
       this.emit('risk-limit', { kind: 'daily-loss', today: this.state.todayPnlUsd });
+      await this.protectPausedPosition(candle, footprint);
       return;
     }
 
-    // 3. Stratejiyi çağır
-    const tickResp = await getWorkerPool()
-      .tick(this.id, {
-        candle,
-        candles: this.state.candles,
-        footprint,
-        footprints: this.footprints,
-        portfolio: {
-          usdt: this.config.capitalUsd,
-          has_position: this.state.position !== null,
-          pnl: this.state.realizedPnlUsd,
-          side: this.state.position?.side,
-        },
-      })
-      .catch((err) => {
-        log.error({ botId: this.id, err }, 'Strategy tick hatasi');
-        return null;
-      });
-
-    if (!tickResp) return;
-    if (tickResp.signal !== 'hold') {
-      this.state.lastSignal = tickResp.signal;
+    // 2. Yürütme çekirdeği: backtest ile aynı kod (giriş, SL/TP, gap, maliyet, strateji)
+    const step = await this.runPaperStep(candle, footprint, true);
+    if (!step) return;
+    if (step.signal !== 'hold') {
+      this.state.lastSignal = step.signal;
     }
-    const runtimeDrawings = Array.isArray(tickResp.drawings) ? tickResp.drawings : [];
+    const runtimeDrawings = Array.isArray(step.drawings) ? step.drawings : [];
     if (runtimeDrawings.length > 0) {
       this.state.drawings = runtimeDrawings;
-    }
-    if (this.state.position) {
-      this.updatePositionLevels(tickResp.sl_price, tickResp.tp_price, tickResp.meta);
-    }
-
-    // 4. Sinyali değerlendir
-    if (tickResp.signal === 'buy') {
-      if (this.state.position?.side === 'SELL') {
-        await this.closePosition(candle.c, 'signal');
-      } else if (!this.state.position) {
-        await this.openPosition(
-          candle.c,
-          'BUY',
-          tickResp.sl_pct ?? this.config.risk.maxLossPct,
-          tickResp.tp_pct ?? this.config.risk.takeProfitPct,
-          tickResp.sl_price,
-          tickResp.tp_price,
-          tickResp.meta
-        );
-      }
-    } else if (tickResp.signal === 'sell') {
-      if (this.state.position?.side === 'BUY') {
-        await this.closePosition(candle.c, 'signal');
-      } else if (!this.state.position) {
-        await this.openPosition(
-          candle.c,
-          'SELL',
-          tickResp.sl_pct ?? this.config.risk.maxLossPct,
-          tickResp.tp_pct ?? this.config.risk.takeProfitPct,
-          tickResp.sl_price,
-          tickResp.tp_price,
-          tickResp.meta
-        );
-      }
-    } else if (tickResp.signal === 'close') {
-      if (this.state.position) {
-        await this.closePosition(candle.c, 'signal');
-      }
     }
     await this.refreshDrawingsFromHistory();
     this.emit('updated', this.getSnapshot());
@@ -580,13 +529,97 @@ export class BotRunner extends EventEmitter {
    * Duraklatilmis bot: strateji sinyali alinmaz ama acik pozisyon korumasiz
    * kalmaz. Gunluk zarar limiti botu 'paused' yaptigi icin bu ozellikle onemli.
    */
-  private async protectPausedPosition(candle: CandleRaw): Promise<void> {
+  private async protectPausedPosition(
+    candle: CandleRaw,
+    footprint: FootprintRaw = emptyFootprint(candle.t)
+  ): Promise<void> {
     this.resetDailyIfNeeded();
-    const closed = await this.checkSlTp(candle);
-    if (closed) {
+    const hadPosition = this.state.position !== null;
+    const step = await this.runPaperStep(candle, footprint, false);
+    if (step && hadPosition && !this.state.position) {
       log.info({ botId: this.id, candleTime: candle.t }, 'Duraklatilmis botta pozisyon SL/TP ile kapandi');
       this.emit('updated', this.getSnapshot());
     }
+  }
+
+  /**
+   * Bir kapanan mumu yürütme çekirdeğinde işler, açılan/kapanan pozisyonları kaydeder ve
+   * çekirdek durumunu saklar. `candles` bu mum dahil stratejinin göreceği pencere.
+   */
+  private async runPaperStep(
+    candle: CandleRaw,
+    footprint: FootprintRaw,
+    runStrategy: boolean,
+    candles: CandleRaw[] = this.state.candles
+  ): Promise<PaperStepResponse | null> {
+    const step = await getWorkerPool()
+      .paperStep(this.id, {
+        candle,
+        candles,
+        footprint,
+        footprints: this.footprints,
+        state: this.core.state,
+        run_strategy: runStrategy,
+        ...this.coreExecutionParams(),
+      })
+      .catch((err) => {
+        log.error({ botId: this.id, err, candleTime: candle.t }, 'Paper adimi hatasi');
+        return null;
+      });
+    if (!step) return null;
+
+    for (const opened of step.opened) {
+      await this.recordOpen(opened);
+    }
+    for (const closed of step.closed) {
+      await this.recordClose(closed);
+    }
+    this.state.position = step.position ? this.positionFromCore(step.position) : null;
+    this.core = { state: step.state, lastCandleT: candle.t };
+    await this.persistCore();
+    return step;
+  }
+
+  /**
+   * Kapaliyken kacan mumlari sirayla isler (onceden yuklenen pencerede kalanlar). Bot kapanmadan
+   * once calisiyorsa strateji de calisir, backtest'in yapacagi gibi; degilse sadece acik
+   * pozisyonun SL/TP'si islenir.
+   */
+  private async catchUpMissedCandles(history: CandleRaw[]): Promise<void> {
+    const lastT = this.core.lastCandleT;
+    if (lastT === null || history.length === 0) return;
+    const firstMissed = history.findIndex((candle) => candle.t > lastT);
+    if (firstMissed < 0) return;
+
+    const runStrategy = this.config.status === 'running' && !this.needsFootprint;
+    if (!runStrategy && !this.state.position) {
+      this.core = { ...this.core, lastCandleT: history[history.length - 1]!.t };
+      await this.persistCore();
+      return;
+    }
+
+    const intervalMs = intervalToMs(this.config.interval);
+    if (intervalMs > 0 && history[0]!.t > lastT + intervalMs) {
+      log.warn(
+        { botId: this.id, lastCandleT: lastT, firstAvailable: history[0]!.t },
+        'Kapaliyken kacan mumlarin bir kismi artik yuklenemiyor; eldeki mumlardan devam ediliyor'
+      );
+    }
+
+    let processed = 0;
+    for (let i = firstMissed; i < history.length; i++) {
+      const candle = history[i]!;
+      const window = history.slice(Math.max(0, i + 1 - MAX_CANDLE_BUFFER), i + 1);
+      const step = await this.runPaperStep(candle, emptyFootprint(candle.t), runStrategy, window);
+      if (!step) break;
+      processed += 1;
+      if (!runStrategy && !this.state.position) break;
+    }
+    if (!runStrategy) {
+      this.core = { ...this.core, lastCandleT: history[history.length - 1]!.t };
+      await this.persistCore();
+    }
+    log.info({ botId: this.id, processed, runStrategy }, 'Kapaliyken kacan mumlar islendi');
   }
 
   private getFootprintBucket(t: number): FootprintAccumulator {
@@ -651,123 +684,103 @@ export class BotRunner extends EventEmitter {
     };
   }
 
-  private async checkSlTp(candle: CandleRaw): Promise<boolean> {
-    const pos = this.state.position;
-    if (!pos) return false;
-
-    // Long: low <= SL → stop, high >= TP → take profit
-    // Short: high >= SL → stop, low <= TP → take profit
-    const isLong = pos.side === 'BUY';
-    const hitSL =
-      pos.stopLossPrice !== undefined &&
-      (isLong ? candle.l <= pos.stopLossPrice : candle.h >= pos.stopLossPrice);
-    const hitTP =
-      pos.takeProfitPrice !== undefined &&
-      (isLong ? candle.h >= pos.takeProfitPrice : candle.l <= pos.takeProfitPrice);
-
-    if (hitSL) {
-      // SL'de gap olabilir; pratikte SL fiyatından kapatıyoruz
-      await this.closePosition(pos.stopLossPrice!, 'sl');
-      return true;
-    }
-    if (hitTP) {
-      await this.closePosition(pos.takeProfitPrice!, 'tp');
-      return true;
-    }
-    return false;
+  private coreExecutionParams(): {
+    initial_capital: number;
+    fee_bps: number;
+    slippage_bps: number;
+    fill_model: string;
+  } {
+    const params = this.config.strategyParams;
+    return {
+      initial_capital: this.config.capitalUsd,
+      fee_bps: finiteNonNegative(params.fee_bps, 10),
+      slippage_bps: finiteNonNegative(params.slippage_bps, 2),
+      fill_model: typeof params.fill_model === 'string' ? params.fill_model : 'pessimistic_ohlc',
+    };
   }
 
-  private async openPosition(
-    price: number,
-    side: 'BUY' | 'SELL',
-    slPct: number | null,
-    tpPct: number | null,
-    slPriceOverride?: number | null,
-    tpPriceOverride?: number | null,
-    meta?: Record<string, unknown>
-  ): Promise<void> {
-    const leverage = normalizePositive(this.config.risk.leverage, 1);
-    const notionalUsd = Math.min(
-      this.config.risk.maxPositionUsd,
-      this.config.capitalUsd * leverage
-    );
-    if (notionalUsd <= 0) {
-      log.warn({ botId: this.id }, 'Notional 0, pozisyon acilmiyor');
-      return;
-    }
-
-    const tpPrice =
-      tpPriceOverride !== null && tpPriceOverride !== undefined
-        ? tpPriceOverride
-        : tpPct !== null && tpPct !== undefined
-        ? side === 'BUY'
-          ? price * (1 + tpPct / 100)
-          : price * (1 - tpPct / 100)
-        : undefined;
-    const slPrice = resolveStopLossPrice(
+  private async recordOpen(opened: PaperCorePosition): Promise<void> {
+    const side: OrderSide = opened.side === 'long' ? 'BUY' : 'SELL';
+    const trade: Trade = {
+      id: randomUUID(),
+      botId: this.id,
+      symbol: this.config.symbol,
       side,
-      price,
-      this.config.risk,
-      slPct,
-      slPriceOverride,
-      tpPrice
-    );
-
-    const ctx: ExecutionContext = { bot: this.config, price };
-    try {
-      const result = await this.execution.openPosition(ctx, {
-        side,
-        notionalUsd,
-        stopLossPrice: slPrice,
-        takeProfitPrice: tpPrice,
-        meta,
-      });
-      this.state.position = result.position;
-      await this.updateConfig({ lastError: undefined });
-      await this.persistTrade(result.trade);
-      this.emit('position-opened', { trade: result.trade, position: result.position });
-    } catch (err) {
-      log.error({ botId: this.id, err }, 'Pozisyon acma hatasi');
-      await this.updateConfig({ lastError: (err as Error).message || 'Pozisyon acma hatasi' });
-    }
+      type: 'MARKET',
+      quantity: opened.qty,
+      price: opened.entry_price,
+      feeUsd: opened.entry_fee,
+      stopLossPrice: opened.sl ?? undefined,
+      takeProfitPrice: opened.tp ?? undefined,
+      meta: {
+        ...(opened.meta ?? {}),
+        paperCore: { entryTime: opened.entry_time, notional: opened.notional },
+      },
+      mode: 'paper',
+      clientOrderId: `paper-${randomUUID()}`,
+      createdAt: Date.now(),
+    };
+    await this.updateConfig({ lastError: undefined });
+    await this.persistTrade(trade);
+    this.emit('position-opened', { trade, position: this.positionFromCore(opened) });
   }
 
-  private async closePosition(price: number, reason: 'signal' | 'sl' | 'tp'): Promise<void> {
-    const pos = this.state.position;
-    if (!pos) return;
-
-    const ctx: ExecutionContext = { bot: this.config, price };
-    try {
-      const result = await this.execution.closePosition(ctx, pos);
-      const pnl = result.trade.pnlUsd ?? 0;
-      this.state.position = null;
-      this.state.realizedPnlUsd += pnl;
-      this.state.todayPnlUsd += pnl;
-      await this.persistTrade(result.trade);
-      this.emit('position-closed', { trade: result.trade, reason, pnl });
-    } catch (err) {
-      log.error({ botId: this.id, err }, 'Pozisyon kapatma hatasi');
-    }
+  private async recordClose(closed: PaperCoreTrade): Promise<void> {
+    const side: OrderSide = closed.side === 'long' ? 'SELL' : 'BUY';
+    const { fee_bps } = this.coreExecutionParams();
+    const exitFee = (Math.abs(closed.exitPrice * closed.qty) * fee_bps) / 10_000;
+    const trade: Trade = {
+      id: randomUUID(),
+      botId: this.id,
+      symbol: this.config.symbol,
+      side,
+      type: 'MARKET',
+      quantity: closed.qty,
+      price: closed.exitPrice,
+      feeUsd: exitFee,
+      pnlUsd: closed.netPnl,
+      meta: {
+        ...(closed.meta ?? {}),
+        paperCore: {
+          reason: closed.reason,
+          entryTime: closed.entryTime,
+          exitTime: closed.exitTime,
+          entryPrice: closed.entryPrice,
+          slPrice: closed.slPrice,
+          tpPrice: closed.tpPrice,
+          coreTradeId: closed.id,
+        },
+      },
+      mode: 'paper',
+      clientOrderId: `paper-${randomUUID()}`,
+      createdAt: Date.now(),
+    };
+    this.state.realizedPnlUsd += closed.netPnl;
+    this.state.todayPnlUsd += closed.netPnl;
+    await this.persistTrade(trade);
+    this.emit('position-closed', { trade, reason: closed.reason, pnl: closed.netPnl });
   }
 
-  private updatePositionLevels(
-    slPrice?: number | null,
-    tpPrice?: number | null,
-    meta?: Record<string, unknown>
-  ): void {
-    const pos = this.state.position;
-    if (!pos) return;
+  private positionFromCore(position: PaperCorePosition): Position {
+    return {
+      botId: this.id,
+      symbol: this.config.symbol,
+      side: position.side === 'long' ? 'BUY' : 'SELL',
+      quantity: position.qty,
+      entryPrice: position.entry_price,
+      stopLossPrice: position.sl ?? undefined,
+      takeProfitPrice: position.tp ?? undefined,
+      meta: position.meta,
+      openedAt: position.entry_time,
+    };
+  }
 
-    const nextTp = finitePositivePrice(tpPrice);
-    const nextSl = finitePositivePrice(slPrice);
-    if (nextTp !== undefined && isValidTakeProfit(pos.side, pos.entryPrice, nextTp)) {
-      pos.takeProfitPrice = nextTp;
-    }
-    if (nextSl !== undefined) {
-      pos.stopLossPrice = nextSl;
-    }
-    if (meta && Object.keys(meta).length > 0) {
-      pos.meta = meta;
+  private async persistCore(): Promise<void> {
+    this.config = { ...this.config, paperCore: this.core };
+    try {
+      await this.storage.bots.update(this.id, { paperCore: this.core });
+    } catch (err) {
+      log.error({ botId: this.id, err }, 'Paper cekirdek durumu kaydedilemedi');
     }
   }
 
@@ -815,12 +828,13 @@ export class BotRunner extends EventEmitter {
   /* ─── Daily reset ──────────────────────────────────────── */
 
   private async hydrateStateFromTrades(): Promise<void> {
+    let openTrade: Trade | null = null;
+    let closedCount = 0;
     try {
       const trades = await this.storage.trades.list({ botId: this.id });
       const todayStart = startOfUtcDay(Date.now());
       let total = 0;
       let today = 0;
-      let position: Position | null = null;
 
       for (const trade of trades) {
         const pnl = typeof trade.pnlUsd === 'number' ? trade.pnlUsd : 0;
@@ -830,68 +844,59 @@ export class BotRunner extends EventEmitter {
 
       for (const trade of [...trades].sort((a, b) => a.createdAt - b.createdAt)) {
         if (isClosingTrade(trade)) {
-          position = null;
+          openTrade = null;
+          closedCount += 1;
           continue;
         }
-        position = this.positionFromOpenTrade(trade);
+        openTrade = trade;
       }
 
       this.state.realizedPnlUsd = Math.round(total * 100) / 100;
       this.state.todayPnlUsd = Math.round(today * 100) / 100;
       this.state.todayResetAt = todayStart;
-      this.state.position = position;
       this.state.lastSignal = lastOpeningSignalFromTrades(trades);
     } catch (err) {
       log.warn({ botId: this.id, err }, 'Bot durumu gecmisten yuklenemedi');
     }
+
+    this.core = this.config.paperCore ?? this.legacyCoreSnapshot(openTrade, closedCount);
+    const position = this.core.state.position as PaperCorePosition | null | undefined;
+    this.state.position = position ? this.positionFromCore(position) : null;
   }
 
-  private async reconcileHydratedPosition(history: Candle[]): Promise<void> {
-    const restored = this.state.position;
-    if (!restored) return;
-
-    for (const candle of history) {
-      if (!this.state.position) break;
-      if (candle.closeTime < restored.openedAt) continue;
-
-      const closed = await this.checkSlTp(candleToRaw(candle));
-      if (closed) {
-        log.warn(
-          {
-            botId: this.id,
-            openedAt: restored.openedAt,
-            candleTime: candle.openTime,
-            sl: restored.stopLossPrice,
-            tp: restored.takeProfitPrice,
-          },
-          'Geri yuklenen pozisyon gecmis SL/TP seviyesiyle uzlastirildi'
-        );
-        break;
-      }
+  /**
+   * Cekirdek durumu kaydi olmayan (eski) bot: durum islem kayitlarindan kurulur. Acik pozisyon
+   * varsa acildigi mumdan itibaren kacan mumlar islenir (eski SL/TP uzlastirmasinin yerine).
+   */
+  private legacyCoreSnapshot(openTrade: Trade | null, closedCount: number): PaperCoreSnapshot {
+    const realized = this.state.realizedPnlUsd;
+    if (!openTrade) {
+      return { state: emptyCoreState(this.config.capitalUsd, realized, closedCount), lastCandleT: null };
     }
-  }
-
-  private positionFromOpenTrade(trade: Trade): Position {
+    const tp =
+      openTrade.takeProfitPrice ??
+      fallbackTakeProfit(openTrade.side, openTrade.price, this.config.risk.takeProfitPct);
+    const sl =
+      openTrade.stopLossPrice ??
+      fallbackStopLoss(openTrade.side, openTrade.price, this.config.risk.maxLossPct);
+    const position: PaperCorePosition = {
+      side: openTrade.side === 'BUY' ? 'long' : 'short',
+      entry_time: openTrade.createdAt,
+      entry_price: openTrade.price,
+      qty: openTrade.quantity,
+      notional: openTrade.price * openTrade.quantity,
+      entry_fee: openTrade.feeUsd,
+      sl: sl ?? null,
+      tp: tp ?? null,
+      meta: openTrade.meta ?? {},
+    };
     return {
-      botId: this.id,
-      symbol: trade.symbol,
-      side: trade.side,
-      quantity: trade.quantity,
-      entryPrice: trade.price,
-      stopLossPrice:
-        trade.stopLossPrice ??
-        resolveStopLossPrice(
-          trade.side,
-          trade.price,
-          this.config.risk,
-          this.config.risk.maxLossPct,
-          undefined,
-          trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, this.config.risk.takeProfitPct)
-        ),
-      takeProfitPrice:
-        trade.takeProfitPrice ?? fallbackTakeProfit(trade.side, trade.price, this.config.risk.takeProfitPct),
-      meta: trade.meta,
-      openedAt: trade.createdAt,
+      state: {
+        ...emptyCoreState(this.config.capitalUsd, realized, closedCount),
+        equity: this.config.capitalUsd + realized - openTrade.feeUsd,
+        position,
+      },
+      lastCandleT: alignTradeTimeToInterval(openTrade.createdAt, this.config.interval) - 1,
     };
   }
 
@@ -935,6 +940,41 @@ export class BotRunner extends EventEmitter {
 
 /* ─── Helpers ──────────────────────────────────────────── */
 
+/** Python execution_core.STATE_VERSION ile ayni olmali. */
+const CORE_STATE_VERSION = 1;
+
+function emptyCoreState(capitalUsd: number, realizedPnlUsd: number, tradeCount: number): Record<string, unknown> {
+  return {
+    v: CORE_STATE_VERSION,
+    equity: capitalUsd + realizedPnlUsd,
+    realized_pnl: realizedPnlUsd,
+    position: null,
+    pending_signal: null,
+    pending_exit: null,
+    trade_count: tradeCount,
+  };
+}
+
+function finiteNonNegative(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+const INTERVAL_UNIT_MS: Record<string, number> = {
+  s: 1_000,
+  m: 60_000,
+  h: 3_600_000,
+  d: 86_400_000,
+  w: 604_800_000,
+};
+
+/** Binance aralığı → ms ('1M' gibi takvim aralıkları için 0). */
+function intervalToMs(interval: string): number {
+  const match = /^(\d+)(s|m|h|d|w)$/.exec(interval);
+  if (!match) return 0;
+  return Number(match[1]) * (INTERVAL_UNIT_MS[match[2]!] ?? 0);
+}
+
 function startOfUtcDay(ts: number): number {
   const d = new Date(ts);
   d.setUTCHours(0, 0, 0, 0);
@@ -965,35 +1005,6 @@ function lastOpeningSignalFromTrades(trades: Trade[]): Signal | null {
 
 function signalFromTrade(trade: Trade): Signal {
   return trade.side === 'BUY' ? 'buy' : 'sell';
-}
-
-function resolveStopLossPrice(
-  side: Trade['side'],
-  entry: number,
-  risk: BotRiskConfig,
-  slPct: number | null,
-  strategySlPrice: number | null | undefined,
-  takeProfitPrice: number | undefined
-): number | undefined {
-  const mode = risk.stopLossMode ?? 'target_ratio';
-  if (mode === 'target_ratio' && takeProfitPrice !== undefined) {
-    const ratio = normalizePositive(risk.stopLossTargetRatio, 0.2);
-    const distance = Math.abs(takeProfitPrice - entry);
-    if (distance > 0) {
-      return side === 'BUY' ? entry - distance * ratio : entry + distance * ratio;
-    }
-  }
-
-  if (mode === 'strategy' && strategySlPrice !== null && strategySlPrice !== undefined) {
-    return strategySlPrice;
-  }
-
-  const pct = slPct ?? risk.maxLossPct;
-  return fallbackStopLoss(side, entry, pct);
-}
-
-function normalizePositive(value: number | undefined, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function compressFootprintLevels(
@@ -1080,15 +1091,6 @@ function alignTradeTimeToInterval(ts: number, interval: string): number {
     : 86_400_000;
   const intervalMs = amount * unitMs;
   return Math.floor(ts / intervalMs) * intervalMs;
-}
-
-function finitePositivePrice(value: number | null | undefined): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-function isValidTakeProfit(side: Trade['side'], entry: number, takeProfit: number): boolean {
-  if (!Number.isFinite(entry) || entry <= 0) return false;
-  return side === 'BUY' ? takeProfit > entry : takeProfit < entry;
 }
 
 function fallbackStopLoss(side: Trade['side'], entry: number, pct: number): number | undefined {

@@ -72,6 +72,74 @@ export interface TickResponse {
   drawings: unknown[];
 }
 
+/**
+ * Yurutme cekirdeginin (python/workers/execution_core.py) JSON durumu. Icerigi Python tarafinda
+ * tanimli; TS tarafi saklar ve bir sonraki adimda aynen geri gonderir.
+ */
+export type PaperCoreState = Record<string, unknown>;
+
+/** Cekirdekteki acik pozisyon (execution_core._open_position). */
+export interface PaperCorePosition {
+  side: 'long' | 'short';
+  entry_time: number;
+  entry_price: number;
+  qty: number;
+  notional: number;
+  entry_fee: number;
+  sl: number | null;
+  tp: number | null;
+  meta: Record<string, unknown>;
+}
+
+/** Cekirdekte kapanan islem (execution_core._close_position). */
+export interface PaperCoreTrade {
+  id: string;
+  side: 'long' | 'short';
+  entryTime: number;
+  entryPrice: number;
+  slPrice: number | null;
+  tpPrice: number | null;
+  exitTime: number;
+  exitPrice: number;
+  qty: number;
+  notional: number;
+  grossPnl: number;
+  netPnl: number;
+  pnlPct: number;
+  accountReturnPct: number;
+  feePaid: number;
+  reason: string;
+  meta: Record<string, unknown>;
+}
+
+export interface PaperStepRequest {
+  instance: string;
+  candle: CandleRaw;
+  candles: CandleRaw[];
+  state: PaperCoreState | null;
+  initial_capital: number;
+  fee_bps: number;
+  slippage_bps: number;
+  fill_model?: string;
+  /** false: duraklatilmis bot, strateji calismaz, sadece SL/TP. */
+  run_strategy?: boolean;
+  footprint?: FootprintRaw | null;
+  footprints?: FootprintRaw[];
+  include_drawings?: boolean;
+}
+
+export interface PaperStepResponse {
+  state: PaperCoreState;
+  opened: PaperCorePosition[];
+  closed: PaperCoreTrade[];
+  position: PaperCorePosition | null;
+  equity: number;
+  mark: number;
+  signal: Signal;
+  meta: Record<string, unknown>;
+  drawings: unknown[];
+}
+
 export interface DrawRequest {
   instance: string;
   candles: CandleRaw[];
@@ -122,6 +190,8 @@ export interface BacktestRequest {
   slippage_bps?: number;
   fill_model?: 'close_next_open' | 'pessimistic_ohlc';
   params?: Record<string, unknown>;
+  /** Stratejiye en fazla bu kadar son mum ver (paper bot 500); 0/yok = tüm geçmiş. */
+  max_history_bars?: number;
 }
 
 export type BacktestResponse = Record<string, unknown>;
