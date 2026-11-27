@@ -7,6 +7,7 @@
 # Original script attribution: LuxAlgo, CC BY-NC-SA 4.0.
 
 import builtins as _builtins
+from indicators.bars import bar_number
 
 
 BULLISH_LEG = 1
@@ -716,6 +717,7 @@ def on_candle(candle, portfolio, config):
 
     state = _analysis(candles, cfg)
     index = len(candles) - 1
+    bar = bar_number(candles)
     event = _latest_signal_event(state, cfg, index)
     if event is None:
         hold()
@@ -726,7 +728,7 @@ def on_candle(candle, portfolio, config):
         hold()
         return
 
-    if LAST_SIGNAL_INDEX is not None and index - LAST_SIGNAL_INDEX < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_INDEX is not None and bar - LAST_SIGNAL_INDEX < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -751,10 +753,10 @@ def on_candle(candle, portfolio, config):
 
     current_side = getattr(portfolio, "side", None)
     if side == "BUY" and current_side != "BUY":
-        LAST_SIGNAL_INDEX = index
+        LAST_SIGNAL_INDEX = bar
         buy()
     elif side == "SELL" and current_side != "SELL":
-        LAST_SIGNAL_INDEX = index
+        LAST_SIGNAL_INDEX = bar
         sell()
     else:
         hold()

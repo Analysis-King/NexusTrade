@@ -4,6 +4,7 @@
 # version: 1.0
 
 import builtins as _builtins
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_BAR = None
@@ -199,7 +200,7 @@ def _clear_position_state():
     ACTIVE_STOP = None
 
 
-def _manage_position(candles, idx, side, atr_value, momentum, cfg):
+def _manage_position(candles, bar, side, atr_value, momentum, cfg):
     global HIGHEST_PRICE, LOWEST_PRICE, ACTIVE_STOP
 
     high = _float(candles[-1].get("h"))
@@ -216,7 +217,7 @@ def _manage_position(candles, idx, side, atr_value, momentum, cfg):
     set_sl(price=ACTIVE_STOP)
 
     if cfg["max_hold_bars"] > 0 and ENTRY_BAR is not None:
-        if idx - ENTRY_BAR >= cfg["max_hold_bars"]:
+        if bar - ENTRY_BAR >= cfg["max_hold_bars"]:
             close()
             return True
 
@@ -240,6 +241,7 @@ def on_candle(candle, portfolio, config):
         return
 
     idx = len(candles) - 1
+    bar = bar_number(candles)
     closes = [_float(item.get("c")) for item in candles]
     close_price = closes[-1]
     series = _series(candles, cfg)
@@ -256,7 +258,7 @@ def on_candle(candle, portfolio, config):
     current_side = getattr(portfolio, "side", None)
 
     if current_side in ("BUY", "SELL"):
-        if _manage_position(candles, idx, current_side, atr_value, momentum, cfg):
+        if _manage_position(candles, bar, current_side, atr_value, momentum, cfg):
             return
         _set_meta(
             setup="adaptive_trend",
@@ -268,7 +270,7 @@ def on_candle(candle, portfolio, config):
         return
 
     _clear_position_state()
-    if LAST_SIGNAL_BAR is not None and idx - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
     if atr_pct < cfg["min_atr_pct"]:
@@ -294,8 +296,8 @@ def on_candle(candle, portfolio, config):
     if long_signal:
         initial_stop = close_price - atr_value * cfg["initial_stop_atr"]
         set_sl(price=initial_stop)
-        LAST_SIGNAL_BAR = idx
-        ENTRY_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        ENTRY_BAR = bar
         HIGHEST_PRICE = _float(candles[-1].get("h"))
         LOWEST_PRICE = _float(candles[-1].get("l"))
         ACTIVE_STOP = initial_stop
@@ -313,8 +315,8 @@ def on_candle(candle, portfolio, config):
     if short_signal:
         initial_stop = close_price + atr_value * cfg["initial_stop_atr"]
         set_sl(price=initial_stop)
-        LAST_SIGNAL_BAR = idx
-        ENTRY_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        ENTRY_BAR = bar
         HIGHEST_PRICE = _float(candles[-1].get("h"))
         LOWEST_PRICE = _float(candles[-1].get("l"))
         ACTIVE_STOP = initial_stop

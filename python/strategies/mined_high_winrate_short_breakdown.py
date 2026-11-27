@@ -4,6 +4,7 @@
 # version: 1.0
 
 import builtins as _builtins
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_BAR = None
@@ -267,6 +268,7 @@ def on_candle(candle, portfolio, config):
 
     series = _cached_series(candles, cfg)
     idx = len(candles) - 1
+    bar = bar_number(candles)
     closes = [float(c["c"]) for c in candles]
     lows = [float(c["l"]) for c in candles]
     highs = [float(c["h"]) for c in candles]
@@ -274,7 +276,7 @@ def on_candle(candle, portfolio, config):
     prev_close = closes[-2]
     current_side = getattr(portfolio, "side", None)
 
-    if LAST_SIGNAL_BAR is not None and idx - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -291,7 +293,7 @@ def on_candle(candle, portfolio, config):
         set_sl(price=sl)
         if cfg["use_take_profit"]:
             set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
+        LAST_SIGNAL_BAR = bar
         _observe(
             "mined_high_winrate.short_breakdown",
             side="short",
@@ -310,7 +312,7 @@ def on_candle(candle, portfolio, config):
             set_sl(price=sl)
             if cfg["use_take_profit"]:
                 set_tp(price=tp)
-            LAST_SIGNAL_BAR = idx
+            LAST_SIGNAL_BAR = bar
             _observe("mined_high_winrate.long_mirror", side="long", rsi=round(series["rsi"][-1], 2))
             buy()
             return

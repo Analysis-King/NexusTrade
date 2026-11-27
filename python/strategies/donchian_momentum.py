@@ -4,6 +4,7 @@
 # version: 1.0
 
 import builtins as _builtins
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_BAR = None
@@ -369,19 +370,19 @@ def on_candle(candle, portfolio, config):
         hold()
         return
 
-    index = len(candles) - 1
+    bar = bar_number(candles)
     current_side = getattr(portfolio, "side", None)
     if not current_side:
         ENTRY_BAR = None
     elif ENTRY_BAR is None:
-        ENTRY_BAR = index
+        ENTRY_BAR = bar
 
-    if current_side and cfg["max_hold_bars"] > 0 and index - ENTRY_BAR >= cfg["max_hold_bars"]:
+    if current_side and cfg["max_hold_bars"] > 0 and bar - ENTRY_BAR >= cfg["max_hold_bars"]:
         ENTRY_BAR = None
         close()
         return
 
-    if LAST_SIGNAL_BAR is not None and index - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -395,8 +396,8 @@ def on_candle(candle, portfolio, config):
         set_sl(pct=stop_pct)
         if cfg["use_take_profit"]:
             set_tp(pct=target_pct)
-        LAST_SIGNAL_BAR = index
-        ENTRY_BAR = index + 1
+        LAST_SIGNAL_BAR = bar
+        ENTRY_BAR = bar + 1
         _observe("donchian_momentum.long", side="long", adx=round(signal["adx"], 2), volume_ratio=round(signal["volume_ratio"], 3))
         buy()
         return
@@ -405,8 +406,8 @@ def on_candle(candle, portfolio, config):
         set_sl(pct=stop_pct)
         if cfg["use_take_profit"]:
             set_tp(pct=target_pct)
-        LAST_SIGNAL_BAR = index
-        ENTRY_BAR = index + 1
+        LAST_SIGNAL_BAR = bar
+        ENTRY_BAR = bar + 1
         _observe("donchian_momentum.short", side="short", adx=round(signal["adx"], 2), volume_ratio=round(signal["volume_ratio"], 3))
         sell()
         return

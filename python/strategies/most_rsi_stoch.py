@@ -4,6 +4,7 @@
 # version: 1.0
 
 import builtins as _builtins
+from indicators.bars import bar_number
 
 
 SERIES_CACHE = {
@@ -754,7 +755,8 @@ def on_candle(candle, portfolio, config):
         return
 
     series = _cached_series(candles, cfg)
-    long_signal, short_signal, idx = _signals(candles, series, cfg)
+    long_signal, short_signal, _ = _signals(candles, series, cfg)
+    bar = bar_number(candles)
     current_side = getattr(portfolio, "side", None)
     close_price = float(candles[-1]["c"])
     if current_side not in ("BUY", "SELL"):
@@ -780,15 +782,15 @@ def on_candle(candle, portfolio, config):
                 (current_side == "BUY" and close_price < float(series["ma"][-1]))
                 or (current_side == "SELL" and close_price > float(series["ma"][-1]))
             )
-        if cfg["max_hold_bars"] > 0 and ENTRY_BAR is not None and idx - ENTRY_BAR >= cfg["max_hold_bars"]:
+        if cfg["max_hold_bars"] > 0 and ENTRY_BAR is not None and bar - ENTRY_BAR >= cfg["max_hold_bars"]:
             should_exit = True
         if should_exit:
-            LAST_SIGNAL_BAR = idx
+            LAST_SIGNAL_BAR = bar
             ENTRY_BAR = None
             close()
             return
 
-    if LAST_SIGNAL_BAR is not None and idx - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -798,8 +800,8 @@ def on_candle(candle, portfolio, config):
             set_sl(price=sl)
         if cfg["use_take_profit"] and tp is not None:
             set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
-        ENTRY_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        ENTRY_BAR = bar
         _observe(
             "most.long",
             side="long",
@@ -813,7 +815,7 @@ def on_candle(candle, portfolio, config):
         return
 
     if short_signal and current_side == "BUY" and not cfg["allow_short"]:
-        LAST_SIGNAL_BAR = idx
+        LAST_SIGNAL_BAR = bar
         ENTRY_BAR = None
         _observe(
             "most.close_long",
@@ -832,8 +834,8 @@ def on_candle(candle, portfolio, config):
             set_sl(price=sl)
         if cfg["use_take_profit"] and tp is not None:
             set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
-        ENTRY_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        ENTRY_BAR = bar
         _observe(
             "most.short",
             side="short",

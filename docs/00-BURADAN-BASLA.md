@@ -100,7 +100,7 @@ argümanlarla birlikte).
 2. O ileriye dönük test **yarım kaldı**: botlar 2-3 hafta sonra, her biri tek işlemle bırakıldı.
    Tek işlemin sebebi bir hataydı (2026-11-27'de bulundu): paper botta stratejinin bekleme sayacı ilk
    sinyalden sonra donuyor, bot backend yeniden başlayana kadar yeni giriş yapamıyor. Bu yüzden o test
-   stratejileri ölçmedi. Ayrıntı: [DENEY-KAYDI EXP-004](arastirma/DENEY-KAYDI.md), düzeltme F1-8.
+   stratejileri ölçmedi. Ayrıntı: [DENEY-KAYDI EXP-004](arastirma/DENEY-KAYDI.md); F1-8 ile düzeltildi.
 3. Temmuz 2026'da harmonik araştırmasına geçildi; oradan çıkan portföyler ileriye dönük
    paper testte yukarıdaki tablodaki gibi zarar etti.
 4. **Harmonik Portföy'ün güzel backtest'i bir hataydı** (2026-11-27'de bulundu). Portföy replay'i giriş
@@ -144,9 +144,12 @@ dolmadan bırakılmamasını şart koşuyor.
   - `.env` anahtarları: backend penceresinde uyarı çıkıyorsa yenilenmeli.
   - Harmonik Portföy ve QualityTarget 4x/10x'in dayandığı backtest geçersiz çıktı; açık pozisyonlarını
     beklemek yerine durdurmak senin kararın. Tarayıcı V2 ve HTF Onay başka araştırmadan (EXP-017/018).
-  - qwm3/qwm5 paper sonucu stratejiyi ölçmüyor (EXP-010); durdurmak senin kararın.
-  - PR #3 birleştirildi. F1-1/F1-6 işi `feat/f1-execution-core` dalında, ayrı bir PR'da.
-- **Sıradaki adım:** F1-8 (bekleme sayacını mum zamanına bağlamak), sonra paper botu `paper_step`'e bağlamak.
+  - F1-8 düzeltildi: 16 strateji bekleme ve tutma sürelerini pencereden bağımsız mum numarasıyla sayıyor;
+    500 mumluk pencere artık tam geçmişle aynı işlemleri veriyor. Çalışan botlarda backend yeniden
+    başlatılınca geçerli olur (qwm botları o zaman 6 mumluk bekleme sonrası yeniden girebilir).
+  - qwm3/qwm5'in bugüne kadarki paper sonucu stratejiyi ölçmüyor (EXP-010); durdurmak senin kararın.
+  - PR #3 ve PR #4 birleştirildi. F1-8 `fix/f1-8-bar-counter` dalında, ayrı bir PR'da.
+- **Sıradaki adım:** Paper botu (`runner.ts`) `paper_step`'e bağlamak (F1-1'in kalanı).
 
 ### 2026-11-26
 

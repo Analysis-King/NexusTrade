@@ -5,6 +5,7 @@
 
 import builtins as _builtins
 import math
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_BAR = None
@@ -506,7 +507,7 @@ def on_candle(candle, portfolio, config):
         hold()
         return
 
-    idx = len(all_candles) - 1
+    bar = bar_number(all_candles)
     current_side = getattr(portfolio, "side", None)
     has_position = bool(getattr(portfolio, "has_position", False))
     if not has_position:
@@ -526,7 +527,7 @@ def on_candle(candle, portfolio, config):
     day_gain, day_low = _day_gain(recent, close_price)
 
     if has_position and current_side == "BUY":
-        bars_held = idx - LAST_ENTRY_BAR if LAST_ENTRY_BAR is not None else 0
+        bars_held = bar - LAST_ENTRY_BAR if LAST_ENTRY_BAR is not None else 0
         stale = bars_held >= cfg["max_hold_bars"]
         loss = (
             cfg["exit_on_momentum_loss"] and
@@ -536,14 +537,14 @@ def on_candle(candle, portfolio, config):
             close_price < m15["ema21"]
         )
         if stale or loss:
-            LAST_SIGNAL_BAR = idx
+            LAST_SIGNAL_BAR = bar
             _observe("explosion.exit", side="long", reason="stale" if stale else "momentum_loss")
             close()
             return
         hold()
         return
 
-    if LAST_SIGNAL_BAR is not None and idx - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -559,8 +560,8 @@ def on_candle(candle, portfolio, config):
     sl, tp, risk_pct = _risk(close_price, m15, recent, cfg)
     set_sl(price=sl)
     set_tp(price=tp)
-    LAST_SIGNAL_BAR = idx
-    LAST_ENTRY_BAR = idx
+    LAST_SIGNAL_BAR = bar
+    LAST_ENTRY_BAR = bar
     _observe(
         "explosion.entry",
         side="long",

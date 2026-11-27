@@ -5,6 +5,7 @@
 
 import builtins as _builtins
 import math
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_BAR = None
@@ -471,7 +472,7 @@ def on_candle(candle, portfolio, config):
         hold()
         return
 
-    idx = len(candles) - 1
+    bar = bar_number(candles)
     data = _series(candles, cfg)
     close_price = float(candles[-1]["c"])
     rsi = data["rsi"][-1]
@@ -487,15 +488,15 @@ def on_candle(candle, portfolio, config):
     if not getattr(portfolio, "has_position", False):
         POSITION_OPEN_BAR = None
 
-    bars_since_signal = idx - LAST_SIGNAL_BAR if LAST_SIGNAL_BAR is not None else None
+    bars_since_signal = bar - LAST_SIGNAL_BAR if LAST_SIGNAL_BAR is not None else None
     if bars_since_signal is not None and bars_since_signal < cfg["cooldown_bars"]:
         hold()
         return
 
     if getattr(portfolio, "has_position", False):
         if POSITION_OPEN_BAR is None:
-            POSITION_OPEN_BAR = idx
-        if idx - POSITION_OPEN_BAR >= cfg["max_hold_bars"]:
+            POSITION_OPEN_BAR = bar
+        if bar - POSITION_OPEN_BAR >= cfg["max_hold_bars"]:
             POSITION_OPEN_BAR = None
             close()
             return
@@ -524,8 +525,8 @@ def on_candle(candle, portfolio, config):
         sl, tp, stop_pct = _risk("BUY", close_price, atr_value, cfg)
         set_sl(price=sl)
         set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
-        POSITION_OPEN_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        POSITION_OPEN_BAR = bar
         _set_meta(last_signal="BUY", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime, htf_regime=htf_regime)
         _observe("mined_reversal.long", side="long", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), stop_pct=round(stop_pct, 3), htf_regime=htf_regime)
         buy()
@@ -544,8 +545,8 @@ def on_candle(candle, portfolio, config):
         sl, tp, stop_pct = _risk("SELL", close_price, atr_value, cfg)
         set_sl(price=sl)
         set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
-        POSITION_OPEN_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        POSITION_OPEN_BAR = bar
         _set_meta(last_signal="SELL", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), regime=regime, htf_regime=htf_regime)
         _observe("mined_reversal.short", side="short", rsi=round(rsi, 2), stoch=round(stoch, 2), bb_width=round(bb_width, 3), stop_pct=round(stop_pct, 3), htf_regime=htf_regime)
         sell()
