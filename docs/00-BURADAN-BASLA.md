@@ -100,6 +100,9 @@ argümanlarla birlikte).
 2. O ileriye dönük test **yarım kaldı**: botlar 2-3 hafta sonra, her biri tek işlemle bırakıldı.
 3. Temmuz 2026'da harmonik araştırmasına geçildi; oradan çıkan portföyler ileriye dönük
    paper testte yukarıdaki tablodaki gibi zarar etti.
+4. **Harmonik Portföy'ün güzel backtest'i bir hataydı** (2026-11-27'de bulundu). Portföy replay'i giriş
+   mumunda stop olan işlemleri (işlemlerin yarısı) atıyordu. Düzeltilince aynı veri günlük −%3.9 ile −%6.1
+   veriyor. Ayrıntı: [DENEY-KAYDI EXP-016](arastirma/DENEY-KAYDI.md).
 
 Ders: sorun fikir eksikliği değil, **başlanan doğrulamanın bitirilmemesi**. Yol haritası bu
 yüzden aynı anda en fazla 3 adayın test edilmesini ve testlerin önceden belirlenen süre
@@ -121,10 +124,18 @@ dolmadan bırakılmamasını şart koşuyor.
     çalışmaya devam ediyor. Testler (39) ve tip kontrolü geçiyor.
   - F0-6: başlatıcının `.exe`, `.dll` ve iki `.json` dosyası birlikte git'e eklendi (yeniden derleme
     adımları yol haritasında).
-  - Bu iki iş PR #2'de (https://github.com/Analysis-King/NexusTrade/pull/2).
-- **Açık işler:** 2026-11-26'daki liste geçerli (backend yeniden başlatılmadı, yedekleme zamanlayıcısı,
-  `.env` anahtarları).
-- **Sıradaki adım:** PR #2'yi birleştirmek, ardından Faz 1.
+  - Bu iki iş PR #2'de (https://github.com/Analysis-King/NexusTrade/pull/2); PR #2 birleştirildi.
+  - Backend yeniden başlatıldı; beş paper portföy de API'de durdurulabilir görünüyor.
+  - İlk `data/` yedeği alındı (`D:\nexustrade-backups`, 32 MB).
+  - Faz 1 başladı. Harmonik Portföy'ün backtest'i ile paper sonucu arasındaki fark açıklandı: portföy
+    replay'i giriş mumunda stop olan işlemleri atıyordu (EXP-016). `harmonic_exit_optimizer.cjs`
+    düzeltildi.
+- **Açık işler:**
+  - Yedekleme Görev Zamanlayıcı'ya bağlanmadı (şimdilik elle `npm run backup:data`).
+  - `.env` anahtarları: backend penceresinde uyarı çıkıyorsa yenilenmeli.
+  - Harmonik Portföy ve QualityTarget 4x/10x'in dayandığı backtest geçersiz çıktı; açık pozisyonlarını
+    beklemek yerine durdurmak senin kararın. Tarayıcı V2 ve HTF Onay başka araştırmadan (EXP-017/018).
+- **Sıradaki adım:** F1-1 tek yürütme çekirdeği ve F1-6 altın testi.
 
 ### 2026-11-26
 

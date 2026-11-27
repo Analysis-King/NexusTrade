@@ -113,7 +113,7 @@ Ekrandaki sayılar doğru.
 | F1-3 | Maliyet modeli: komisyon, kayma, fonlama, likidasyon | Y-2 | M |
 | F1-4 | Standart deney raporu (protokoldeki metrikler, pencere tablosu, görülmemiş veri ayrımı) | Y-3 | M |
 | F1-5 | Her backtest çalıştırmasının deney kaydına otomatik satır yazması | Y-3 | S |
-| F1-6 | "Altın test": sabit mumlarda backtest ve paper aynı işlemleri üretiyor mu | O-5 | M |
+| F1-6 | "Altın test": sabit mumlarda backtest ve paper aynı işlemleri üretiyor mu. Harmonik farkın ana nedeni bulundu (EXP-016); motorlar arasındaki bilinen farklar (açık pozisyonda SL/TP güncelleme, 600 mum penceresi, kaçan döngüler) test edilmeyi bekliyor. Portföy replay'i giriş mumunda kapanan işlemleri dahil etmeli | O-5 | M |
 | F1-7 | Üç ayrı paper portföy script'i yerine çekirdeği kullanan tek "çok sembollü paper" modu | Y-1 | M |
 
 **Kapı:** Altın test geçiyor.
@@ -135,8 +135,11 @@ sabitlendi**; o tarihten bugüne 5,5 aylık veri bu adaylar için gerçekten gö
    çalıştır. Aynı anda en fazla 3 aday kuralı gereği 1 veya 2 bitince başlar.
 4. Bunlardan hiçbiri geçmezse yeni hipotezler. Ama her yeni hipotez önce kayda yazılır.
 
-Harmonik sonuçlarına güvenmeden önce F1-6 altın testi, Harmonik Portföy'ün backtest'i (%27-32 kazanma) ile
-paper sonucu (%11.7 kazanma) arasındaki farkı açıklamalı ([EXP-016](arastirma/DENEY-KAYDI.md)).
+Harmonik Portföy'ün backtest'i ile paper sonucu arasındaki fark 2026-11-27'de açıklandı: portföy replay'i
+giriş mumunda stop olan işlemleri atıyordu. Düzeltilince 28 Haziran adayı (ve QualityTarget ayarları) her
+pencerede ağır zarar ediyor ([EXP-016](arastirma/DENEY-KAYDI.md)). Bu aile Faz 2 listesine alınmadı.
+`harmonic_exit_optimizer.cjs` ile üretilmiş başka portföy sonuçları da aynı hatayı taşıyor; yeniden
+hesaplanmadan kullanılmamalı.
 
 **Kapı:** Bir aday "ileriye dönük teste hazır" kriterlerini geçiyor.
 

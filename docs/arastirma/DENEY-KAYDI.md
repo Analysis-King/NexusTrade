@@ -15,9 +15,12 @@ olduğundan iyi görünür.
 
 1. **Az pencere, büyük umut; çok pencere, sıfır.** Birçok aile 4-7 pencerede günlük %0.3-1.3 gösterdi;
    aynı aile 15-20 pencerede ya da temizlenmiş sembol evreninde sıfıra yakın çıktı (EXP-013, EXP-014).
-2. **Backtest ile paper arasında büyük açık var ve açıklanmadı.** Harmonik Portföy backtest'te 5 pencerede
-   günlük %0.84-1.59 ve %27-32 kazanma oranı gösterdi; paper testte kazanma oranı %11.7, sonuç −%46.6
-   (EXP-016 → EXP-005). Faz 1'deki altın test (F1-6) önce bu farkı açıklamalı.
+2. **Backtest'i paper'dan ayıran şey bir replay hatasıydı (2026-11-27'de bulundu).** Harmonik Portföy
+   backtest'te 5 pencerede günlük %0.84-1.59 ve %27-32 kazanma oranı gösterdi; paper testte kazanma oranı
+   %11.7, sonuç −%46.6 (EXP-016 → EXP-005). Portföy replay'i giriş mumunda kapanan işlemleri (işlemlerin
+   yarısı, neredeyse hepsi stop) sonucu önceden biliyormuş gibi atıyordu. Düzeltilince aynı veriden
+   günlük −%3.9 ile −%6.1 çıkıyor. Ders: sonucu bir işlemin geleceğine bakan her filtre, ne kadar masum
+   görünürse görünsün, geleceği görmedir. Yeni çekirdekte (F1-1) bunun için test yazılmalı.
 3. **Bitmemiş tek umut verici iş:** risk filtreli iç içe seçici (EXP-013c), 14 kör pencerenin 13'ünde
    pozitif. Hiç ileriye dönük test edilmedi.
 
@@ -29,8 +32,8 @@ olduğundan iyi görünür.
 | EXP-002 | Adaptif strateji seçici | Backtest | 2026-06 | Kör holdout'ta günlük −%0.12 ile −%0.40 | Kaldı |
 | EXP-003 | Adaptif rejim yönlendirici | Backtest | 2026-06 | 20 profilden 0-2'si kârlı | Kaldı |
 | EXP-004 | Haziran adaylarının ileriye dönük testi | Paper | 2026-06 → 07-02 | Her aday 1 işlem yaptı, test bırakıldı | Yarım kaldı |
-| EXP-005 | Harmonik Portföy (12x) | Paper portföy | 2026-07-19 → | 249 işlem, kazanma %11.7, **−%46.6** | Kaldı |
-| EXP-006 | Harmonik QualityTarget 4x / 10x | Paper portföy | 2026-07-19 → | 123 işlem, kazanma %10.6, **−%42.8 / −%94.8** | Kaldı |
+| EXP-005 | Harmonik Portföy (12x) | Paper portföy | 2026-07-19 → | 249 işlem, kazanma %11.7, **−%46.6** | Kaldı; dayandığı backtest geçersiz (EXP-016) |
+| EXP-006 | Harmonik QualityTarget 4x / 10x | Paper portföy | 2026-07-19 → | 123 işlem, kazanma %10.6, **−%42.8 / −%94.8** | Kaldı; dayandığı backtest geçersiz (EXP-016) |
 | EXP-007 | Harmonik Tarayıcı V2 | Paper portföy | 2026-07-08 → | 183 işlem, kazanma %18.6, **−%16.2** | Kaldı |
 | EXP-008 | Harmonik Tarayıcı V2 HTF Onay | Paper portföy | 2026-07-21 → | 8 işlem, kazanma %37.5, +%0.8 | Karar verilemez |
 | EXP-009 | Harmonik bot (filtresiz) | Paper bot | 2026-05-31 → 11-25 | 93 işlem, kazanma %47.3, **−220 $ / 1000 $** | Kaldı |
@@ -40,7 +43,7 @@ olduğundan iyi görünür.
 | EXP-013 | Kesitsel momentum, fonlama, iç içe seçiciler | Backtest | 2026-06-14 → 06-25 | Momentum ve fonlama dağıldı; risk filtreli seçici 13/14 pozitif | Karışık |
 | EXP-014 | Vadeli Orphan, kaldıraç taraması | Backtest | 2026-06-18 | Kaldıraç arttıkça ortalama kötüleşti | Kaldı |
 | EXP-015 | İnternet stratejileri, universal alpha, edge miner | Backtest | 2026-06-25 → 06-26 | Hepsi günlük −%0.22 ile +%0.0 arası | Kaldı |
-| EXP-016 | Harmonik çıkış optimizasyonu ve portföy adayı | Backtest | 2026-06-26 → 06-28 | ~209 varyant; portföy adayı 5 pencerede %0.84-1.59/gün | Paper'da kaldı (EXP-005) |
+| EXP-016 | Harmonik çıkış optimizasyonu ve portföy adayı | Backtest | 2026-06-26 → 06-28 | ~209 varyant; portföy adayı 5 pencerede %0.84-1.59/gün; replay hatası düzeltilince −%3.9 ile −%6.1/gün | **Geçersiz** (replay hatası) |
 | EXP-017 | Harmonik V2 taramaları (matris, ABCD, çıkış) | Backtest | 2026-07-05 → 07-07 | 50 sembolde hiçbir periyot/süre ortalamada pozitif değil (1h 1 yıl −%19) | Kaldı |
 | EXP-018 | Harmonik dayanıklılık araması ve Yengeç nihai test | Backtest | 2026-07-08 | Train ve test'te PF>1 kalan 2 bearish pattern seçildi (test'te 46 ve 21 işlem) | Paper'da kaldı (EXP-007) |
 
@@ -248,7 +251,8 @@ ettikleri için rakamlar değişebilir.
 
 ### EXP-016 · Harmonik çıkış optimizasyonu ve portföy adayı
 
-- **Durum:** Backtest'te geçti, paper testte kaldı (EXP-005, EXP-006)
+- **Durum:** Geçersiz. Backtest'teki portföy sonucu bir replay hatasından geliyordu (aşağıda); paper testte
+  kaldı (EXP-005, EXP-006)
 - **Tarih:** 2026-06-26 → 06-28
 - **Yöntem:** `scripts/harmonic_exit_optimizer.cjs`, 15m / 1h / 4h, 50 sembol, 90 günlük pencereler ve
   90-270 gün kaydırılmış pencereler. 90 raporda yaklaşık **209 farklı varyant** (pattern filtresi, TP hedefi,
@@ -259,16 +263,39 @@ ettikleri için rakamlar değişebilir.
   en fazla 10 pozisyon, 12x. Beş 90 günlük pencerede günlük %0.84-1.59 (ortalama %1.12), kazanma oranı
   %27-32, gerçekleşmiş en büyük düşüş %42-71. Son pencere "görülmemiş holdout" olarak işaretli.
 - **İleriye dönük sonuç:** Paper portföy (EXP-005) kazanma oranı %11.7, −%46.6.
-- **Açıklanmamış fark:** Backtest motoru mumları sırayla işliyor (pool_worker `backtest`), yani bariz bir
-  geleceği görme yok. Olası nedenler, doğrulanmadı:
-  - 6 filtre aynı pencerelerde 200'den fazla varyant içinden seçildi; "holdout" penceresi filtre
-    seçimi sırasında gerçekten görülmemiş mi, kayıtlı değil.
-  - Backtest ve paper script'i farklı kod (Y-1).
-  - Sembol başına avantaj ~0 iken sonucu 12x kaldıraç ve "hedef mesafesine göre sıralama" üretiyor;
-    bu çok kırılgan.
-  - Temmuz sonrası piyasa rejimi.
-- **Sonraki adım:** F1-6 altın testinde paper dönemini (19 Temmuz - 26 Kasım) backtest motoruyla yeniden
-  oynatıp işlem işlem karşılaştırmak. Fark açıklanmadan hiçbir harmonik sonucu güvenilir sayılmamalı.
+- **Fark açıklandı (2026-11-27): portföy replay hatası.**
+  - Backtest motoru (pool_worker `backtest`) sembol başına mumları sırayla işliyor; orada sorun yok.
+    Sorun, sembol işlemlerini ortak sermayede birleştiren `replayPortfolio()`'daydı
+    (`scripts/harmonic_exit_optimizer.cjs`): `exitTime > entryTime` filtresi giriş mumunda kapanan her
+    işlemi listeden atıyordu. Giriş anında bunu bilmek mümkün değil, yani geleceği görme.
+  - SL hedef mesafesinin %20'si olduğu için stop çok yakın; işlemlerin %48-51'i giriş mumunda kapanıyor
+    ve neredeyse hepsi stop. Paper'da da aynı: 251 işlemin 130'u (%52) giriş mumunda kapandı, bunların
+    kazanma oranı %4.6.
+  - 28 Haziran'daki 5 pencere, kayıtlı işlem satırlarından (`data/harmonic_exit_optimizer_1h_90d_*50s_20260628T06*.json`)
+    birebir yeniden üretildi; sonra filtre düzeltilerek tekrar hesaplandı:
+
+    | Pencere | Raporlanan: günlük / kazanma / işlem / düşüş | Düzeltilmiş: günlük / kazanma / işlem / düşüş |
+    |---|---|---|
+    | Güncel | %1.585 / %31.6 / 580 / %42.5 | −%3.90 / %17.8 / 1198 / %97.4 |
+    | 90 gün önce | %1.059 / %27.2 / 595 / %45.6 | −%4.13 / %16.2 / 1146 / %98.6 |
+    | 180 gün önce | %0.836 / %28.8 / 580 / %58.6 | −%4.50 / %15.5 / 1145 / %98.5 |
+    | 270 gün önce | %0.953 / %26.7 / 772 / %59.1 | −%6.06 / %14.5 / 1547 / %99.7 |
+    | 360 gün önce (holdout) | %1.143 / %27.1 / 569 / %71.2 | −%4.03 / %16.2 / 1094 / %97.8 |
+
+  - Kaldıraçsız (1x) bile güncel pencere günlük −%0.30. Yani strateji işlem başına zarar ediyor; sonucu
+    kaldıraç değil, atılan işlemler pozitife çeviriyordu.
+  - QualityTarget ayarları (2 pozisyon, kalite × √hedef sıralaması) da aynı replay'den geliyor: raporlanan
+    günlük %0.50-1.73, düzeltilmiş 4x'te −%2.7 ile −%5.2, 10x'te −%8.4 ile −%14.1 (5 pencerenin hepsinde
+    %95-100 düşüş).
+  - Filtre düzeltildi (`>=`). Düzeltilmiş sonuçlar şu komutla yeniden üretilir:
+    `node scripts/harmonic_exit_optimizer.cjs --replay-json=<dosya> --replay-combine=true --portfolio-replay=true --portfolio-score=target --portfolio-positions=10 --portfolio-extra-cost-bps=0`
+- **Kalan küçük fark:** Düzeltilmiş backtest kazanma oranı %14.5-17.8, paper %11.6 (farklı dönemler).
+  Motorlar arasında bilinen başka farklar da var, F1-6 altın testinde ölçülecek:
+  - Backtest açık pozisyonun SL/TP'sini her mumda stratejinin son çıktısına göre güncelliyor
+    (`pool_worker.py` `_apply_risk_update`); paper girişte sabitliyor.
+  - Backtest tüm geçmişi görüyor; paper son 600 mumu.
+  - Paper 130 günde 725 döngü çalıştı (saatlik 3120 mumun yaklaşık dörtte biri); bilgisayar kapalıyken
+    sinyaller kaçtı.
 - **Rapor:** `data/harmonic_exit_optimizer_*.md`, `data/harmonic_portfolio_candidate_20260628.md`
 
 ### EXP-017 · Harmonik V2 taramaları

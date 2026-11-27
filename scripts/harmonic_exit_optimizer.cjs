@@ -706,8 +706,11 @@ function replayPortfolio(trades, maxPositions, scoreMode, portfolioLeverage = 1,
     closeThrough(time);
     const slots = maxPositions - active.length;
     if (slots <= 0) continue;
+    // Giris mumunda kapanan islemler de dahil (exitTime === entryTime). Eskiden `> time` ile
+    // atiliyorlardi: bu, sonucu bilinmeden verilemeyecek bir karardi ve 28 Haziran portfoy adayinin
+    // gunluk %0.84-1.59'unun tamamini uretti (duzeltilince gunluk -%3.9 ile -%6.1). Bkz. DENEY-KAYDI EXP-016.
     const candidates = groups.get(time)
-      .filter((trade) => Number(trade.exitTime || 0) > time)
+      .filter((trade) => Number(trade.exitTime || 0) >= time)
       .filter((trade) => portfolioEligible(trade, scoreMode))
       .sort((a, b) => portfolioScore(b, scoreMode) - portfolioScore(a, scoreMode));
     for (const trade of candidates.slice(0, slots)) {
