@@ -5,6 +5,7 @@
 
 import builtins as _builtins
 import math
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_BAR = None
@@ -274,7 +275,7 @@ def on_candle(candle, portfolio, config):
         return
 
     data = _series(candles, cfg)
-    idx = len(candles) - 1
+    bar = bar_number(candles)
     close_price = data["close"][-1]
     prev_close = data["close"][-2]
     upper = data["upper"][-1]
@@ -289,7 +290,7 @@ def on_candle(candle, portfolio, config):
     macd_hist = data["macd_hist"][-1]
     current_side = getattr(portfolio, "side", None)
 
-    if LAST_SIGNAL_BAR is not None and idx - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -320,7 +321,7 @@ def on_candle(candle, portfolio, config):
         set_sl(price=sl)
         if cfg["use_take_profit"]:
             set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
+        LAST_SIGNAL_BAR = bar
         _observe("bollinger_squeeze.long", side="long", rsi=round(rsi, 2), width=round(width, 4))
         buy()
         return
@@ -330,18 +331,18 @@ def on_candle(candle, portfolio, config):
         set_sl(price=sl)
         if cfg["use_take_profit"]:
             set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
+        LAST_SIGNAL_BAR = bar
         _observe("bollinger_squeeze.short", side="short", rsi=round(rsi, 2), width=round(width, 4))
         sell()
         return
 
     if cfg["exit_on_midline"] and current_side == "BUY" and close_price < middle:
-        LAST_SIGNAL_BAR = idx
+        LAST_SIGNAL_BAR = bar
         close()
         return
 
     if cfg["exit_on_midline"] and current_side == "SELL" and close_price > middle:
-        LAST_SIGNAL_BAR = idx
+        LAST_SIGNAL_BAR = bar
         close()
         return
 

@@ -8,6 +8,11 @@
  *
  * Paper bot stratejiye son 500 mumu verir (src/bot/runner.ts MAX_CANDLE_BUFFER); backtest'e
  * de ayni pencere `max_history_bars` ile verilir.
+ *
+ * Ikinci bolum (F1-8): strateji 500 mumluk pencereyle tum gecmisle ayni islemleri uretiyor mu.
+ * Bekleme ve tutma sureleri `len(candles) - 1` ile sayildiginda pencere dolunca sayac donuyor ve
+ * bot ilk sinyalden sonra yeni giris yapamiyordu; sayaclar artik indicators/bars.py'deki
+ * pencereden bagimsiz mum numarasini kullaniyor.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -172,6 +177,40 @@ describe('execution parity: backtest vs step-by-step paper', () => {
       // Son nokta haric (backtest onu test sonu kapanisiyla degistirir) sermaye egrisi de ayni.
       const curve = backtest.equity.map((point) => point.value);
       expect(marks.slice(0, -1)).toEqual(curve.slice(0, marks.length - 1));
+    });
+  }
+});
+
+describe('paper window: a 500-candle window gives the same trades as full history', () => {
+  const WINDOW_CASES: Array<{ strategy: string; candles: Candle[]; label: string }> = [
+    { strategy: 'dema_cross_trend.py', candles: TRX, label: 'cooldown' },
+    { strategy: 'donchian_momentum.py', candles: ZEC, label: 'cooldown and max hold bars' },
+    { strategy: 'most_rsi_stoch.py', candles: ZEC, label: 'cooldown and max hold bars' },
+    { strategy: 'adaptive_trend_momentum.py', candles: ZEC, label: 'max hold bars in a helper' },
+    { strategy: 'daily_momentum_breakout.py', candles: TRX, label: 'bars held in a helper' },
+  ];
+
+  for (const testCase of WINDOW_CASES) {
+    test(`${testCase.strategy} (${testCase.label})`, { timeout: 60_000 }, async () => {
+      const runs: Trade[][] = [];
+      for (const max_history_bars of [0, PAPER_WINDOW]) {
+        const instance = await load(testCase.strategy, {});
+        const result = await worker.request<BacktestResult>('backtest', {
+          instance,
+          candles: testCase.candles,
+          params: {},
+          max_history_bars,
+          ...EXECUTION,
+        });
+        await worker.request('drop', { instance });
+        runs.push(result.trades);
+      }
+      const [fullHistory, windowed] = runs;
+      const afterWindowFills = fullHistory.filter(
+        (trade) => trade.entryTime > testCase.candles[PAPER_WINDOW].t
+      );
+      expect(afterWindowFills.length).toBeGreaterThan(3);
+      expect(windowed).toEqual(fullHistory);
     });
   }
 });

@@ -4,6 +4,7 @@
 # version: 1.0
 
 import builtins as _builtins
+from indicators.bars import bar_number
 
 
 DAY_MS = 86_400_000
@@ -319,7 +320,7 @@ def _ready(candles, cfg):
     )
 
 
-def _manage_position(idx, close_price, atr_value, series, cfg, portfolio):
+def _manage_position(bar, close_price, atr_value, series, cfg, portfolio):
     global LAST_ENTRY_BAR, ENTRY_PRICE, HIGHEST_CLOSE, LOWEST_CLOSE
 
     side = getattr(portfolio, "side", None)
@@ -334,7 +335,7 @@ def _manage_position(idx, close_price, atr_value, series, cfg, portfolio):
     HIGHEST_CLOSE = close_price if HIGHEST_CLOSE is None else max(HIGHEST_CLOSE, close_price)
     LOWEST_CLOSE = close_price if LOWEST_CLOSE is None else min(LOWEST_CLOSE, close_price)
 
-    bars_held = idx - LAST_ENTRY_BAR if LAST_ENTRY_BAR is not None else 0
+    bars_held = bar - LAST_ENTRY_BAR if LAST_ENTRY_BAR is not None else 0
     if cfg["trailing_stop"] and atr_value > 0:
         if side == "BUY":
             trail = HIGHEST_CLOSE - atr_value * cfg["trail_atr"]
@@ -370,6 +371,7 @@ def on_candle(candle, portfolio, config):
         return
 
     idx = len(candles) - 1
+    bar = bar_number(candles)
     close_price = float(candles[-1]["c"])
     volume = float(candles[-1]["v"])
     series = _cached_series(candles, cfg)
@@ -387,7 +389,7 @@ def on_candle(candle, portfolio, config):
     day_open, day_high, day_low, day_gain, day_drop = _day_context(candles, idx)
 
     if getattr(portfolio, "has_position", False):
-        if _manage_position(idx, close_price, atr_value, series, cfg, portfolio):
+        if _manage_position(bar, close_price, atr_value, series, cfg, portfolio):
             return
         hold()
         return
@@ -396,7 +398,7 @@ def on_candle(candle, portfolio, config):
     HIGHEST_CLOSE = None
     LOWEST_CLOSE = None
 
-    if LAST_SIGNAL_BAR is not None and idx - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -428,8 +430,8 @@ def on_candle(candle, portfolio, config):
         sl, tp, stop_pct = _risk_levels("BUY", close_price, atr_value, cfg)
         set_sl(price=sl)
         set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
-        LAST_ENTRY_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        LAST_ENTRY_BAR = bar
         ENTRY_PRICE = close_price
         HIGHEST_CLOSE = close_price
         LOWEST_CLOSE = close_price
@@ -460,8 +462,8 @@ def on_candle(candle, portfolio, config):
         sl, tp, stop_pct = _risk_levels("SELL", close_price, atr_value, cfg)
         set_sl(price=sl)
         set_tp(price=tp)
-        LAST_SIGNAL_BAR = idx
-        LAST_ENTRY_BAR = idx
+        LAST_SIGNAL_BAR = bar
+        LAST_ENTRY_BAR = bar
         ENTRY_PRICE = close_price
         HIGHEST_CLOSE = close_price
         LOWEST_CLOSE = close_price

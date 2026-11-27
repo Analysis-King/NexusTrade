@@ -5,6 +5,7 @@
 
 import builtins as _builtins
 import math
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_KEY = None
@@ -1237,7 +1238,7 @@ def on_candle(candle, portfolio, config):
 
     candidates = _scan_candidates(candles, cfg)
     current_side = getattr(portfolio, "side", None)
-    current_index = len(candles) - 1
+    bar = bar_number(candles)
 
     if getattr(portfolio, "has_position", False):
         if cfg["exit_on_opposite_signal"] and candidates:
@@ -1258,7 +1259,7 @@ def on_candle(candle, portfolio, config):
         return
 
     best = candidates[0]
-    if LAST_SIGNAL_BAR is not None and current_index - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
     key = _signal_key(best)
@@ -1286,7 +1287,7 @@ def on_candle(candle, portfolio, config):
         reason=best["reason"],
     )
     LAST_SIGNAL_KEY = key
-    LAST_SIGNAL_BAR = current_index
+    LAST_SIGNAL_BAR = bar
     if best["side"] == "long":
         buy()
     else:

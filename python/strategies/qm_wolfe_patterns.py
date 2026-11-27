@@ -6,6 +6,7 @@
 import builtins as _builtins
 
 from strategies import orphan_market_reader as omr
+from indicators.bars import bar_number
 
 
 LAST_SIGNAL_KEY = None
@@ -437,7 +438,7 @@ def on_candle(candle, portfolio, config):
         _observe_candidate(candidate)
 
     current_side = getattr(portfolio, "side", None)
-    current_index = len(candles) - 1
+    bar = bar_number(candles)
 
     if getattr(portfolio, "has_position", False):
         if cfg["exit_on_opposite_signal"] and trade_candidates:
@@ -458,7 +459,7 @@ def on_candle(candle, portfolio, config):
         return
 
     best = trade_candidates[0]
-    if LAST_SIGNAL_BAR is not None and current_index - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR < cfg["cooldown_bars"]:
         hold()
         return
 
@@ -484,7 +485,7 @@ def on_candle(candle, portfolio, config):
     )
 
     LAST_SIGNAL_KEY = key
-    LAST_SIGNAL_BAR = current_index
+    LAST_SIGNAL_BAR = bar
     if best["side"] == "long":
         buy()
     else:

@@ -4,6 +4,7 @@
 # version: 1.0
 
 import builtins as _builtins
+from indicators.bars import bar_number
 
 LAST_SIGNAL_BAR = None
 TRADED_ZONES = set()
@@ -765,7 +766,8 @@ def on_candle(candle, portfolio, config):
         return
 
     index = len(candles) - 1
-    if LAST_SIGNAL_BAR is not None and index - LAST_SIGNAL_BAR <= cfg["cooldown_bars"]:
+    bar = bar_number(candles)
+    if LAST_SIGNAL_BAR is not None and bar - LAST_SIGNAL_BAR <= cfg["cooldown_bars"]:
         hold()
         return
 
@@ -803,7 +805,7 @@ def on_candle(candle, portfolio, config):
     set_sl(price=sl)
     set_tp(price=tp)
     _set_meta(zone, regime)
-    LAST_SIGNAL_BAR = index
+    LAST_SIGNAL_BAR = bar
     TRADED_ZONES.add(zone["id"])
     if zone["side"] == "BUY":
         buy()

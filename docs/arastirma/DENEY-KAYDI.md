@@ -100,7 +100,8 @@ ettikleri için rakamlar değişebilir.
   bekleme süresi hiç dolmuyor. Bot ilk sinyalden sonra backend yeniden başlayana kadar yeni giriş yapamıyor.
   DEMA botu için kesin (`dema_cross_trend.py` 31 Mayıs'tan beri değişmedi). Donchian dosyasının Haziran
   sürümü git'te yok, bugünkü sürümde aynı hata var. Aynı mumlarda tam geçmişle 10 ve 20 işlem çıkan DEMA ve
-  Donchian, 500 mumluk pencereyle 1'er işlem üretiyor. Yani bu test stratejileri ölçmedi. Düzeltme: F1-8.
+  Donchian, 500 mumluk pencereyle 1'er işlem üretiyor. Yani bu test stratejileri ölçmedi. F1-8 ile düzeltildi:
+  düzeltmeden sonra pencere ile tam geçmiş aynı işlemleri veriyor.
 - **Not:** Bu adayların parametreleri 12 Haziran'da sabitlendi. O tarihten sonraki veri onlar için gerçekten
   görülmemiş veri; Faz 2'de ilk yeniden test edilecekler bunlar ([02-YOL-HARITASI.md](../02-YOL-HARITASI.md)).
 
