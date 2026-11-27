@@ -145,7 +145,7 @@ dolmadan bırakılmamasını şart koşuyor.
   - Harmonik Portföy ve QualityTarget 4x/10x'in dayandığı backtest geçersiz çıktı; açık pozisyonlarını
     beklemek yerine durdurmak senin kararın. Tarayıcı V2 ve HTF Onay başka araştırmadan (EXP-017/018).
   - qwm3/qwm5 paper sonucu stratejiyi ölçmüyor (EXP-010); durdurmak senin kararın.
-  - F1-1/F1-6 işi `feat/f1-execution-core` dalında, PR #3'ün üstünde; commit edilmedi.
+  - PR #3 birleştirildi. F1-1/F1-6 işi `feat/f1-execution-core` dalında, ayrı bir PR'da.
 - **Sıradaki adım:** F1-8 (bekleme sayacını mum zamanına bağlamak), sonra paper botu `paper_step`'e bağlamak.
 
 ### 2026-11-26
