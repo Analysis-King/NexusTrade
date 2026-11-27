@@ -71,8 +71,8 @@ Log: `logs/backend.log`. Saatler UTC yazılır (Türkiye saati = UTC + 3).
 | Ad | Tür | Strateji dosyası | Sembol / periyot | Durum | Sonuç |
 |---|---|---|---|---|---|
 | Harmonik | Bot | `pine_harmonic_patterns.py` (filtresiz) | BTCUSDT 1m | Durdu | −220 $ / 1000 $ (93 işlem, 31 May'dan beri) |
-| qwm3 | Bot | `qm_wolfe_patterns.py` | ETHUSDT 4h | Çalışıyor | 0 $ (henüz kapanan işlem yok) |
-| qwm5 | Bot | `qm_wolfe_patterns.py` | ADAUSDT 5m | Çalışıyor | −61 $ / 1000 $ |
+| qwm3 | Bot | `qm_wolfe_patterns.py` | ETHUSDT 4h | Çalışıyor | 0 $ (henüz kapanan işlem yok); sonuç stratejiyi ölçmüyor (EXP-010) |
+| qwm5 | Bot | `qm_wolfe_patterns.py` | ADAUSDT 5m | Çalışıyor | −61 $ / 1000 $; sonuç stratejiyi ölçmüyor (EXP-010) |
 | Harmonik Portföy | Paper portföy | `harmonic_portfolio_candidate.py` | 50 sembol 1h, 12x | Kapanıyor | −%47.3 |
 | QualityTarget 4x | Paper portföy | aynı | 50 sembol 1h, 4x | Kapanıyor | −%43.7 |
 | QualityTarget 10x | Paper portföy | aynı | 50 sembol 1h, 10x | Kapanıyor | −%94.9 |
@@ -98,6 +98,9 @@ argümanlarla birlikte).
    Özetin kendi önerisi: üç adayı (DEMA long TRXUSDT 1h, Donchian ZECUSDT 1h iki varyant)
    ileriye dönük paper testte çalıştırmak ve **parametre madenciliğini bırakmak**.
 2. O ileriye dönük test **yarım kaldı**: botlar 2-3 hafta sonra, her biri tek işlemle bırakıldı.
+   Tek işlemin sebebi bir hataydı (2026-11-27'de bulundu): paper botta stratejinin bekleme sayacı ilk
+   sinyalden sonra donuyor, bot backend yeniden başlayana kadar yeni giriş yapamıyor. Bu yüzden o test
+   stratejileri ölçmedi. Ayrıntı: [DENEY-KAYDI EXP-004](arastirma/DENEY-KAYDI.md), düzeltme F1-8.
 3. Temmuz 2026'da harmonik araştırmasına geçildi; oradan çıkan portföyler ileriye dönük
    paper testte yukarıdaki tablodaki gibi zarar etti.
 4. **Harmonik Portföy'ün güzel backtest'i bir hataydı** (2026-11-27'de bulundu). Portföy replay'i giriş
@@ -116,7 +119,7 @@ dolmadan bırakılmamasını şart koşuyor.
 
 ### 2026-11-27
 
-- **Faz:** Faz 0, Toparlanma
+- **Faz:** Faz 1, Tek ölçüm hattı (Faz 0'dan yedek zamanlayıcısı kaldı)
 - **Bu oturumda yapılanlar:**
   - `chore/faz0-toparlanma` dalı GitHub'a gönderildi ve PR #1 ile `main`'e birleştirildi
     (https://github.com/Analysis-King/NexusTrade/pull/1). GitHub'daki `main` artık güncel.
@@ -129,13 +132,21 @@ dolmadan bırakılmamasını şart koşuyor.
   - İlk `data/` yedeği alındı (`D:\nexustrade-backups`, 32 MB).
   - Faz 1 başladı. Harmonik Portföy'ün backtest'i ile paper sonucu arasındaki fark açıklandı: portföy
     replay'i giriş mumunda stop olan işlemleri atıyordu (EXP-016). `harmonic_exit_optimizer.cjs`
-    düzeltildi.
+    düzeltildi (PR #3).
+  - F1-1 başladı: backtest'in yürütme kuralları `python/workers/execution_core.py`'ye taşındı; backtest
+    sonuçları değişmedi. Paper için mum mum çalışan `paper_step` worker komutu eklendi.
+  - F1-6 altın testi yazıldı (`tests/executionParity.test.ts`): aynı mumlarda backtest ve `paper_step` 6
+    senaryoda birebir aynı işlemleri üretiyor. Paper bot henüz `paper_step`'i kullanmıyor.
+  - Altın test bir hata buldu (F1-8): paper botun 500 mumluk penceresinde 15 stratejinin bekleme sayacı
+    donuyor. Haziran testinin (EXP-004) tek işlemde kalması ve qwm botlarının sonucu bundan.
 - **Açık işler:**
   - Yedekleme Görev Zamanlayıcı'ya bağlanmadı (şimdilik elle `npm run backup:data`).
   - `.env` anahtarları: backend penceresinde uyarı çıkıyorsa yenilenmeli.
   - Harmonik Portföy ve QualityTarget 4x/10x'in dayandığı backtest geçersiz çıktı; açık pozisyonlarını
     beklemek yerine durdurmak senin kararın. Tarayıcı V2 ve HTF Onay başka araştırmadan (EXP-017/018).
-- **Sıradaki adım:** F1-1 tek yürütme çekirdeği ve F1-6 altın testi.
+  - qwm3/qwm5 paper sonucu stratejiyi ölçmüyor (EXP-010); durdurmak senin kararın.
+  - F1-1/F1-6 işi `feat/f1-execution-core` dalında, PR #3'ün üstünde; commit edilmedi.
+- **Sıradaki adım:** F1-8 (bekleme sayacını mum zamanına bağlamak), sonra paper botu `paper_step`'e bağlamak.
 
 ### 2026-11-26
 
