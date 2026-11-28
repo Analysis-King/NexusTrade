@@ -139,10 +139,14 @@ ettikleri için rakamlar değişebilir.
 ### EXP-008 · Harmonik Tarayıcı V2 HTF Onay
 
 - **Durum:** Karar verilemez (yetersiz örnek)
-- **Kurulum:** EXP-007 + 4h'de aynı yönde onay şartı; 380 sembol, 1h giriş.
+- **Kurulum:** EXP-007 + üst periyotta aynı yönde onay şartı; 380 sembol. Girişler 1h ve 4h'de; 1h girişi
+  4h ya da 1d'de, 4h girişi 1d'de, son 3 mum içinde aynı yönde sinyal ister (kayıtlı ayar:
+  `data/harmonic_scanner_htf_confirm_paper_report.json`). En fazla 15 pozisyon, 1x.
 - **Tarih:** 2026-07-21 →
 - **Sonuç:** 4 ayda 8 işlem, kazanma %37.5, +%0.8.
 - **Sonraki adım:** 8 Temmuz sonrası veride backtest ile işlem sayısını büyütüp protokole göre değerlendir.
+  Bu paper testi eski script kurallarıyla koştu. Aynı ayarlar artık paper ile aynı kuralları kullanan
+  portföy backtest'iyle (`portfolio_backtest`, F1-7) ölçülebilir.
 
 ### EXP-009 · Harmonik bot (filtresiz, BTCUSDT 1m)
 
