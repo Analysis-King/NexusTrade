@@ -134,7 +134,7 @@ dolmadan bırakılmamasını şart koşuyor.
 
 - **Faz:** Faz 1, Tek ölçüm hattı
 - **Bu oturumda yapılanlar:**
-  - Paper bot işi PR #6'da (https://github.com/Analysis-King/NexusTrade/pull/6), birleştirilmeyi bekliyor.
+  - Paper bot işi PR #6 ile `main`'e birleştirildi (https://github.com/Analysis-King/NexusTrade/pull/6).
   - F1-7: çok sembollü paper portföy aynı kurallara geçti. Kurallar `python/workers/portfolio_core.py`'de;
     backtest (`portfolio_backtest`) ve paper (`scripts/paper_portfolio.cjs`) aynı kodu çalıştırıyor.
     Paper her çalışmada kapalı kalınan süre dahil kaçan mumları işliyor. `tests/portfolioParity.test.ts`
@@ -143,8 +143,8 @@ dolmadan bırakılmamasını şart koşuyor.
     ikisi (Tarayıcı V2, HTF Onay) toplam 3 açık pozisyonun kapanmasını bekliyor.
 - **Açık işler:**
   - Önceki günün açık işleri (yedek zamanlayıcısı, `.env`, qwm botları) aynen duruyor.
-  - PR #6 ve bu iş birleşip ana klasör `main`'e geçince ve backend yeniden başlayınca çalışan sisteme
-    yansır.
+  - F1-7 işi PR #7'de (https://github.com/Analysis-King/NexusTrade/pull/7), birleştirilmeyi bekliyor.
+    Birleşip ana klasör `main`'e geçince ve backend yeniden başlayınca çalışan sisteme yansır.
 - **Sıradaki adım:** Faz 1'de F1-2 ile F1-5 arası (risk bazlı büyüklük, maliyet modeli, standart rapor,
   otomatik deney kaydı) ya da Faz 2'nin ilk yeniden testleri: Haziran adayları (tek sembol) ve
   Tarayıcı V2 HTF Onay'ın 8 Temmuz sonrası portföy backtest'i.
