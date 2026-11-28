@@ -290,6 +290,9 @@ class PoolWorker:
         req: instance, candle (yeni kapanan mum), candles (bu mum dahil gecmis), state (ilk
         adimda null), initial_capital / fee_bps / slippage_bps / fill_model / start_time,
         istege bagli params, footprint, footprints, include_drawings.
+
+        run_strategy=false (duraklatilmis bot): bekleyen sinyal atilir, strateji calismaz;
+        sadece bekleyen cikis ve acik pozisyonun SL/TP'si islenir.
         """
         instance_id = req['instance']
         inst = self.instances.get(instance_id)
@@ -303,6 +306,20 @@ class PoolWorker:
         candle = req['candle']
         candles = req.get('candles') or [candle]
         core = ExecutionCore.from_request(params, req).load_state(req.get('state'))
+        if req.get('run_strategy') is False:
+            core.pending_signal = None
+            core.open_bar(candle)
+            return {
+                'state': core.to_state(),
+                'opened': core.opened,
+                'closed': core.trades,
+                'position': core.position,
+                'equity': core.equity,
+                'mark': core.mark(float(candle['c'])),
+                'signal': 'hold',
+                'meta': {},
+                'drawings': [],
+            }
         core.open_bar(candle)
         signal_data = self._run_on_candle(
             module,

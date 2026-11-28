@@ -75,6 +75,16 @@ export interface BotConfig {
   updatedAt: number;
   /** Son hata mesajı (status === 'error' ise). */
   lastError?: string;
+  /**
+   * Paper botun yurutme cekirdegi durumu (pozisyon, bekleyen sinyal, sermaye) ve en son
+   * islenen mumun acilis zamani. Yeniden baslatmada buradan devam edilir.
+   */
+  paperCore?: PaperCoreSnapshot;
+}
+
+export interface PaperCoreSnapshot {
+  state: Record<string, unknown>;
+  lastCandleT: number | null;
 }
 
 /* ─── Trade & Pozisyon ─────────────────────────────────────── */

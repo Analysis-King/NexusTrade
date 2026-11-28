@@ -138,18 +138,25 @@ dolmadan bırakılmamasını şart koşuyor.
   - F1-6 altın testi yazıldı (`tests/executionParity.test.ts`): aynı mumlarda backtest ve `paper_step` 6
     senaryoda birebir aynı işlemleri üretiyor. Paper bot henüz `paper_step`'i kullanmıyor.
   - Altın test bir hata buldu (F1-8): paper botun 500 mumluk penceresinde 15 stratejinin bekleme sayacı
-    donuyor. Haziran testinin (EXP-004) tek işlemde kalması ve qwm botlarının sonucu bundan.
+    donuyor. Haziran testinin (EXP-004) tek işlemde kalması ve qwm botlarının sonucu bundan. PR #5 ile
+    düzeltildi.
+  - F1-1 paper bot: `src/bot/runner.ts` artık kendi SL/TP ve giriş kodu yerine her kapanan mumda
+    `paper_step`'i çağırıyor. Çekirdek durumu bot kaydında (`paperCore`) saklanıyor; yeniden başlatmada
+    kapalıyken kaçan mumlar (son 500 içindekiler) işleniyor. `tests/runnerParity.test.ts`: bot aynı
+    mumlarda backtest ile birebir aynı işlemleri kaydediyor, yeniden başlatma ve kaçan mumlar dahil.
+    Davranış değişiklikleri yol haritasında (F1-1).
 - **Açık işler:**
   - Yedekleme Görev Zamanlayıcı'ya bağlanmadı (şimdilik elle `npm run backup:data`).
   - `.env` anahtarları: backend penceresinde uyarı çıkıyorsa yenilenmeli.
   - Harmonik Portföy ve QualityTarget 4x/10x'in dayandığı backtest geçersiz çıktı; açık pozisyonlarını
     beklemek yerine durdurmak senin kararın. Tarayıcı V2 ve HTF Onay başka araştırmadan (EXP-017/018).
-  - F1-8 düzeltildi: 16 strateji bekleme ve tutma sürelerini pencereden bağımsız mum numarasıyla sayıyor;
-    500 mumluk pencere artık tam geçmişle aynı işlemleri veriyor. Çalışan botlarda backend yeniden
-    başlatılınca geçerli olur (qwm botları o zaman 6 mumluk bekleme sonrası yeniden girebilir).
+  - F1-8 ve paper botun çekirdeğe bağlanması çalışan botlarda ancak ana klasör `main`'e geçip backend
+    yeniden başlatılınca geçerli olur. O zaman qwm botları daha sık işlem açar ve giriş/çıkış kuralları
+    backtest'inkiyle aynı olur.
   - qwm3/qwm5'in bugüne kadarki paper sonucu stratejiyi ölçmüyor (EXP-010); durdurmak senin kararın.
-  - PR #3 ve PR #4 birleştirildi. F1-8 `fix/f1-8-bar-counter` dalında, ayrı bir PR'da.
-- **Sıradaki adım:** Paper botu (`runner.ts`) `paper_step`'e bağlamak (F1-1'in kalanı).
+  - PR #3, #4 ve #5 birleştirildi. Paper bot işi `feat/f1-runner-paper-step` dalında, ayrı bir PR'da.
+- **Sıradaki adım:** F1-7 (paper portföy script'lerinin çekirdeği kullanması) ya da Faz 2'nin ilk yeniden
+  testi (Haziran adayları, yeni çekirdekte, 12 Haziran sonrası veride).
 
 ### 2026-11-26
 

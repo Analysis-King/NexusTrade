@@ -25,6 +25,8 @@ import type {
   DrawRequest,
   DrawResponse,
   LoadResponse,
+  PaperStepRequest,
+  PaperStepResponse,
   TickRequest,
   TickResponse,
   ValidateStrategyResponse,
@@ -180,6 +182,26 @@ export class WorkerPool {
     }
     return worker.request<TickResponse>(
       'tick',
+      { instance: instanceId, ...req },
+      this.tickTimeoutMs
+    );
+  }
+
+  /** Paper bot: yurutme cekirdegini bir kapanan mum icin calistirir (backtest ile ayni kod). */
+  async paperStep(
+    instanceId: string,
+    req: Omit<PaperStepRequest, 'instance'>
+  ): Promise<PaperStepResponse> {
+    const meta = this.instanceMap.get(instanceId);
+    if (!meta) {
+      throw new WorkerError(`Bot yuklu degil: ${instanceId}`);
+    }
+    const worker = this.workers[meta.workerIdx];
+    if (!worker || !worker.isAlive) {
+      throw new WorkerError(`Bot worker'i olu: ${instanceId}`);
+    }
+    return worker.request<PaperStepResponse>(
+      'paper_step',
       { instance: instanceId, ...req },
       this.tickTimeoutMs
     );
