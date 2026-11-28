@@ -28,7 +28,8 @@ NexusTrade Baslat.exe
  │    ├─ Python worker havuzları (python/workers/pool_worker.py)
  │    │     4 süreç bot tick'leri, 2 süreç backtest/çizim işleri
  │    └─ Paper portföy denetçisi (src/services/paperPortfolioSupervisor.ts)
- │          30 dakikada bir scripts/harmonic_*_paper*.cjs çalıştırır
+ │          30 dakikada bir her paper portföyü bir kez çalıştırır: yeniler scripts/paper_portfolio.cjs,
+ │          eski beş portföy scripts/harmonic_*_paper*.cjs (sadece kalan pozisyonlar)
  └─ scripts/start-web.cmd ─► Vite arayüzü (http://localhost:5173, web/)
 ```
 
@@ -44,11 +45,11 @@ NexusTrade Baslat.exe
 | `public/` | Eski tek sayfa arayüz, kullanılmıyor | evet |
 | `python/strategies/` | 33 strateji dosyası; aktif kullanılan 4-5 tanesi | evet |
 | `python/workers/` | Strateji çalıştırıcı ve backtest motoru | evet |
-| `scripts/` | Paper portföyler, başlatıcılar, yedekleme ve Faz 1-2 araçları (17 dosya) | evet |
+| `scripts/` | Paper portföyler, başlatıcılar, yedekleme ve Faz 1-2 araçları (16 dosya + `lib/`) | evet |
 | `scripts/archive/` | Kapanmış deneylerin 48 araştırma script'i; bakımı yapılmıyor | evet |
 | `data/` | `bots.json`, `trades.json`, paper portföy durumları, **555 araştırma raporu**, mum önbelleği (~600 MB) | **hayır**; yedek: `npm run backup:data` (`../nexustrade-backups`) |
 | `logs/` | `backend.log`, çökme raporları (`logs/reports/`) | hayır |
-| `tests/` | 39 test (vitest), hepsi geçiyor (2026-11-26) | evet |
+| `tests/` | 60 test (vitest), hepsi geçiyor (2026-11-28) | evet |
 
 ## Sık kullanılan komutlar
 
@@ -66,18 +67,21 @@ npm run backup:data
 
 Log: `logs/backend.log`. Saatler UTC yazılır (Türkiye saati = UTC + 3).
 
-## Şu an çalışanlar (2026-11-26)
+## Şu an çalışanlar (botlar 2026-11-26, portföyler 2026-11-28)
 
 | Ad | Tür | Strateji dosyası | Sembol / periyot | Durum | Sonuç |
 |---|---|---|---|---|---|
 | Harmonik | Bot | `pine_harmonic_patterns.py` (filtresiz) | BTCUSDT 1m | Durdu | −220 $ / 1000 $ (93 işlem, 31 May'dan beri) |
 | qwm3 | Bot | `qm_wolfe_patterns.py` | ETHUSDT 4h | Çalışıyor | 0 $ (henüz kapanan işlem yok); sonuç stratejiyi ölçmüyor (EXP-010) |
 | qwm5 | Bot | `qm_wolfe_patterns.py` | ADAUSDT 5m | Çalışıyor | −61 $ / 1000 $; sonuç stratejiyi ölçmüyor (EXP-010) |
-| Harmonik Portföy | Paper portföy | `harmonic_portfolio_candidate.py` | 50 sembol 1h, 12x | Kapanıyor | −%47.3 |
-| QualityTarget 4x | Paper portföy | aynı | 50 sembol 1h, 4x | Kapanıyor | −%43.7 |
-| QualityTarget 10x | Paper portföy | aynı | 50 sembol 1h, 10x | Kapanıyor | −%94.9 |
-| Tarayıcı V2 | Paper portföy | `harmonic_scanner_v2.py` | 380 sembol 1h+4h | Kapanıyor | −%16.3 |
-| Tarayıcı V2 HTF Onay | Paper portföy | `harmonic_scanner_v2.py` + 4h onay | 380 sembol 1h | Kapanıyor | +%0.8 (sadece 8 işlem) |
+| Harmonik Portföy | Paper portföy | `harmonic_portfolio_candidate.py` | 50 sembol 1h, 12x | Tamamlandı | −%45.3 (252 işlem) |
+| QualityTarget 4x | Paper portföy | aynı | 50 sembol 1h, 4x | Tamamlandı | −%39.9 (125 işlem) |
+| QualityTarget 10x | Paper portföy | aynı | 50 sembol 1h, 10x | Tamamlandı | −%94.0 (125 işlem) |
+| Tarayıcı V2 | Paper portföy | `harmonic_scanner_v2.py` | 380 sembol 1h+4h | Kapanıyor (2 açık) | −%16.8 (184 işlem) |
+| Tarayıcı V2 HTF Onay | Paper portföy | `harmonic_scanner_v2.py` + 4h/1d onay | 380 sembol 1h+4h | Kapanıyor (1 açık) | +%0.5 (sadece 8 işlem) |
+
+Bu beş portföy F1-7 öncesi script'lerle başladı. Script'ler yeni işlem açmıyor, süre uzatmıyor; kalan
+pozisyonlar kapanınca biter. Yeni paper portföy aşağıdaki gibi açılır.
 
 Paper portföy durumları:
 - **Çalışıyor:** planlanan bitişe kadar yeni işlem açar.
@@ -85,9 +89,18 @@ Paper portföy durumları:
 - **Tamamlandı:** açık pozisyon kalmadı.
 - **Durduruldu:** arayüzdeki "Durdur" ile; açık pozisyonlar son fiyattan kapatılır, geri alınamaz.
 
-Süresi dolan bir portföy arayüzdeki "Süreyi 30 gün uzat" ile yeniden işlem açar. Komut satırından aynı
-işler: `node scripts/<script>.cjs --action=stop` ya da `--action=extend --extend-days=30` (supervisor'daki
-argümanlarla birlikte).
+Süresi dolan bir portföy arayüzdeki "Süreyi 30 gün uzat" ile yeniden işlem açar (eski beş portföy hariç).
+
+Yeni paper portföy (F1-7; kurallar backtest ile aynı, `python/workers/portfolio_core.py`):
+
+```powershell
+node scripts/paper_portfolio.cjs --action=create --name=HTF_Onay_Retest --strategy=harmonic_scanner_v2.py --intervals=1h,4h --confirm-intervals=4h,1d --symbols=380 --positions=15 --days=90
+```
+
+Durum `data/htf_onay_retest_paper_state.json` dosyasına yazılır. Backend'deki supervisor bu portföyü
+30 dakikada bir kendisi bulup çalıştırır. Diğer komutlar `--state=data/<ad>_paper_state.json` ile:
+`--action=report`, `--action=stop`, `--action=extend --extend-days=30`. Ayarların listesi script'in
+başında. Faz 3'te aynı anda en fazla 3 aday.
 
 ## Unutulmaması gereken araştırma sonuçları
 
@@ -116,6 +129,25 @@ dolmadan bırakılmamasını şart koşuyor.
 ## Son durum
 
 > Her oturum sonunda burayı güncelle. En yeni kayıt en üstte.
+
+### 2026-11-28
+
+- **Faz:** Faz 1, Tek ölçüm hattı
+- **Bu oturumda yapılanlar:**
+  - Paper bot işi PR #6'da (https://github.com/Analysis-King/NexusTrade/pull/6), birleştirilmeyi bekliyor.
+  - F1-7: çok sembollü paper portföy aynı kurallara geçti. Kurallar `python/workers/portfolio_core.py`'de;
+    backtest (`portfolio_backtest`) ve paper (`scripts/paper_portfolio.cjs`) aynı kodu çalıştırıyor.
+    Paper her çalışmada kapalı kalınan süre dahil kaçan mumları işliyor. `tests/portfolioParity.test.ts`
+    (8 test) bunu doğruluyor. Ayrıntı ve davranış farkları yol haritasında (F1-7).
+  - Eski üç portföy script'i yeni portföy açmıyor ve süre uzatmıyor; beş eski portföyün üçü tamamlandı,
+    ikisi (Tarayıcı V2, HTF Onay) toplam 3 açık pozisyonun kapanmasını bekliyor.
+- **Açık işler:**
+  - Önceki günün açık işleri (yedek zamanlayıcısı, `.env`, qwm botları) aynen duruyor.
+  - PR #6 ve bu iş birleşip ana klasör `main`'e geçince ve backend yeniden başlayınca çalışan sisteme
+    yansır.
+- **Sıradaki adım:** Faz 1'de F1-2 ile F1-5 arası (risk bazlı büyüklük, maliyet modeli, standart rapor,
+  otomatik deney kaydı) ya da Faz 2'nin ilk yeniden testleri: Haziran adayları (tek sembol) ve
+  Tarayıcı V2 HTF Onay'ın 8 Temmuz sonrası portföy backtest'i.
 
 ### 2026-11-27
 

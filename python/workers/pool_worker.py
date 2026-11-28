@@ -53,6 +53,7 @@ from execution_core import (  # noqa: E402
     _float_param,
     _stop_or_target_price,
 )
+from portfolio_core import PortfolioCore  # noqa: E402
 
 STRATEGIES_DIR = os.path.join(_PYROOT, 'strategies')
 
@@ -126,6 +127,10 @@ class PoolWorker:
             return self._backtest(req)
         if cmd == 'paper_step':
             return self._paper_step(req)
+        if cmd == 'portfolio_backtest':
+            return self._portfolio(req, backtest=True)
+        if cmd == 'portfolio_run':
+            return self._portfolio(req, backtest=False)
         if cmd == 'optimize_harmonic':
             return self._optimize_harmonic(req)
         raise ValueError(f"Bilinmeyen komut: {cmd}")
@@ -343,6 +348,82 @@ class PoolWorker:
             'meta': signal_data.get('meta') or {},
             'drawings': signal_data.get('drawings') or [],
         }
+
+    def _portfolio(self, req, backtest):
+        """
+        Cok sembollu portfoy (portfolio_core.PortfolioCore). Backtest ve paper ayni yol:
+        `datasets` icindeki islenmemis mumlar kapanis zamanina gore sirayla islenir.
+
+        req: strategy_file (testlerde strategy_code), params, datasets {"SEMBOL|periyot": mumlar},
+        state (paper; ilk calismada null), initial_capital, fee_bps, slippage_bps, max_positions,
+        leverage, score_mode, entry_intervals, confirm_intervals, confirm_bars, max_history_bars,
+        start_time, accept_entries, require_full_window. Paper'da elle durdurma icin
+        close_all_at {anahtar: fiyat} ve close_time.
+
+        Her anahtar icin strateji ayri yuklenir ve istek bitince birakilir (worker'da durum
+        tutulmaz; paper her calismada durumu istekle gonderir).
+        """
+        datasets = req.get('datasets')
+        if not isinstance(datasets, dict) or not datasets:
+            raise ValueError('portfoy icin datasets bos')
+        modules = {}
+        params = None
+        for key in sorted(datasets):
+            module, config = self._portfolio_module(req, key)
+            modules[key] = (module, config)
+            if params is None:
+                params = config
+        core = PortfolioCore(params, req)
+        if not backtest:
+            core.load_state(req.get('state'))
+
+        def run_strategy(key, candle, window, portfolio):
+            module, config = modules[key]
+            return self._run_on_candle(module, config, candle, window, portfolio)
+
+        core.run(datasets, run_strategy)
+        if backtest:
+            core.close_at_end(datasets)
+        elif isinstance(req.get('close_all_at'), dict):
+            core.close_all(req['close_all_at'], int(req.get('close_time') or core.clock))
+
+        result = {
+            'state': core.to_state(),
+            'opened': core.opened,
+            'closed': core.trades,
+            'positions': core.positions,
+            'equity': core.equity,
+            'mark_equity': core.mark_equity,
+            'counters': core.counters,
+            'execution': {
+                'fill_model': core.rules.fill_model,
+                'stop_loss_mode': core.rules.stop_loss_mode,
+                'stop_loss_target_ratio': core.rules.stop_loss_target_ratio,
+                'same_candle_tp_sl': core.rules.same_candle_mode,
+                'stop_trigger_mode': core.rules.stop_trigger_mode,
+                'min_reward_risk': core.rules.min_reward_risk,
+                'max_history_bars': core.max_history_bars,
+            },
+        }
+        if backtest:
+            result['summary'] = _summary(core.initial, core.equity, core.trades, core.mark_max_drawdown_pct)
+            result['equity_curve'] = core.equity_curve
+        return result
+
+    def _portfolio_module(self, req, key):
+        instance_id = f"portfolio_{key.replace('|', '_')}"
+        if req.get('strategy_code'):
+            module = self._module_from_code(instance_id, 'inline_strategy.py', req['strategy_code'])
+        else:
+            strategy_file = req.get('strategy_file') or ''
+            filepath = os.path.join(STRATEGIES_DIR, strategy_file)
+            if not strategy_file or not os.path.exists(filepath):
+                raise FileNotFoundError(f"Strateji dosyasi yok: {strategy_file}")
+            module = self._module_from_file(instance_id, strategy_file, filepath)
+        config = dict(req.get('params') or {})
+        if hasattr(module, 'initialize'):
+            config = {**(module.initialize() or {}), **config}
+        return module, _resolve_module_config(module, config)
 
     def _optimize_harmonic(self, req):
         strategy_file = req.get('strategy_file') or 'pine_harmonic_patterns.py'

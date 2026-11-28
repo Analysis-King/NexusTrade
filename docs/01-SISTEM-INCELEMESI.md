@@ -130,6 +130,10 @@ Efor: **S** = birkaç saat, **M** = 1-3 gün, **L** = 1 hafta ve üstü.
   tek bir yerde. Backtest, paper ve canlı bu çekirdeği farklı "aracı" (broker) ile kullanır:
   `SimuleAracı` (geçmiş mumlar), `PaperAracı` (canlı mum, sanal dolum), `BinanceAracı` (gerçek emir).
   Python motoru zaten en olgun olanı; çekirdek orada kalabilir.
+- **Durum (2026-11-28):** Backtest, paper bot ve paper portföy aynı kuralları kullanıyor: tek sembol
+  için `python/workers/execution_core.py` (F1-1), çok sembol için onun yardımcılarını kullanan
+  `python/workers/portfolio_core.py` (F1-7). Üç eski portföy script'i yeni portföy açmıyor; yalnızca kalan
+  pozisyonlarını kapatıyor. Canlı aracı Faz 4'te (F4-2).
 
 ### Y-2 · Fonlama ve likidasyon yok
 

@@ -5,6 +5,11 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const lifecycle = require('./lib/paper_lifecycle.cjs');
 
+// F1-7: bu script emekli. Sadece daha once baslatilmis portfoylerin raporunu yazar, acik
+// pozisyonlarini SL/TP ile kapatir ya da elle durdurur; yeni portfoy acmaz, sure uzatmaz.
+// Yeni portfoy: node scripts/paper_portfolio.cjs --action=create (yurutme cekirdegiyle ayni kurallar).
+const RETIRED_MESSAGE = 'Bu script emekli (F1-7): yeni portfoy acmaz, sure uzatmaz. Yeni portfoy icin: node scripts/paper_portfolio.cjs --action=create';
+
 const ROOT = path.resolve(__dirname, '..');
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
@@ -63,23 +68,16 @@ async function main() {
   let worker;
   try {
     let state = readState(false);
-    if (action === 'stop' || action === 'extend') {
+    if (action === 'extend') throw new Error(RETIRED_MESSAGE);
+    if (action === 'stop') {
       if (!state) throw new Error(`Paper test durumu bulunamadi: ${statePath}`);
       validateState(state);
       await applyLifecycleAction(action, state);
       return;
     }
-    if (!state) {
-      const symbols = explicitSymbols.length
-        ? explicitSymbols.slice(0, config.symbolCount)
-        : await selectSymbols(config.symbolCount);
-      state = createState(symbols);
-      saveState(state);
-      console.log(`Yeni paper testi olusturuldu: ${symbols.length} sembol, ${config.durationDays} gun.`);
-    } else {
-      validateState(state);
-      console.log(`Paper testi devam ediyor: ${state.symbols.length} sembol, baslangic ${state.startedAtIso}.`);
-    }
+    if (!state) throw new Error(RETIRED_MESSAGE);
+    validateState(state);
+    console.log(`Paper testi devam ediyor: ${state.symbols.length} sembol, baslangic ${state.startedAtIso}.`);
 
     if (!lifecycle.acceptingEntries(state)) {
       await runManageOnlyCycle(state);

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { ConflictError, NotFoundError } from '../utils/errors.js';
 import { createLogger } from '../utils/logger.js';
@@ -29,7 +30,12 @@ export type PaperPortfolioActionState = {
   error?: string;
 };
 
-const jobs: PaperJob[] = [
+/**
+ * Eski uc script'le (F1-7 oncesi) baslatilmis portfoyler. Sadece durum dosyalari varsa calisir;
+ * hepsinin suresi doldu, script'ler yeni islem acmaz, kalan acik pozisyonlari kapatir.
+ * Yeni portfoyler `paper_portfolio.cjs` ile acilir ve asagidaki tarama ile bulunur.
+ */
+const legacyJobs: PaperJob[] = [
   {
     name: 'harmonic_portfolio',
     script: 'harmonic_portfolio_paper.cjs',
@@ -80,6 +86,63 @@ const jobs: PaperJob[] = [
   },
 ];
 
+const PORTFOLIO_ENGINE = 'portfolio_core';
+const PORTFOLIO_SCRIPT = 'paper_portfolio.cjs';
+
+function dataDir(): string {
+  return path.resolve(process.cwd(), 'data');
+}
+
+function legacyStateFile(job: PaperJob): string {
+  return job.reportFile.replace(/_report\.json$/i, '_state.json');
+}
+
+/** Cok sembollu paper modunun (portfolio_core) durum dosyalari. */
+function portfolioJobs(): PaperJob[] {
+  let files: string[];
+  try {
+    files = fs.readdirSync(dataDir());
+  } catch {
+    return [];
+  }
+  const legacy = new Set(legacyJobs.map(legacyStateFile));
+  const found: PaperJob[] = [];
+  for (const file of files.sort()) {
+    if (!file.endsWith('_paper_state.json') || legacy.has(file)) continue;
+    if (!hasPortfolioEngine(path.join(dataDir(), file))) continue;
+    found.push({
+      name: file.replace(/_state\.json$/i, ''),
+      script: PORTFOLIO_SCRIPT,
+      args: ['--action=once', `--state=data/${file}`],
+      reportFile: file.replace(/_state\.json$/i, '_report.json'),
+    });
+  }
+  return found;
+}
+
+/**
+ * Durum dosyasi buyuk olabilir (tum islem gecmisi); paper_portfolio.cjs `engine` alanini dosyanin
+ * basina yazar, bu yuzden ilk baytlar yeterli.
+ */
+function hasPortfolioEngine(file: string): boolean {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    const head = Buffer.alloc(256);
+    const length = fs.readSync(fd, head, 0, head.length, 0);
+    return head.subarray(0, length).toString('utf8').includes(`"engine":"${PORTFOLIO_ENGINE}"`);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+function currentJobs(): PaperJob[] {
+  const legacy = legacyJobs.filter((job) => fs.existsSync(path.join(dataDir(), legacyStateFile(job))));
+  return [...legacy, ...portfolioJobs()];
+}
+
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
@@ -103,7 +166,7 @@ export function startPaperPortfolioSupervisor(): () => void {
 
 /** Supervisor'in yonettigi portfoy mu (durdur/uzat verilebilir mi)? */
 export function isManagedPaperPortfolio(reportFile: string): boolean {
-  return jobs.some((job) => job.reportFile === reportFile);
+  return currentJobs().some((job) => job.reportFile === reportFile);
 }
 
 export function getPaperPortfolioActionState(
@@ -122,7 +185,7 @@ export function requestPaperPortfolioAction(
   action: PaperPortfolioAction,
   extendDays?: number
 ): void {
-  const job = jobs.find((item) => item.reportFile === reportFile);
+  const job = currentJobs().find((item) => item.reportFile === reportFile);
   if (!job) throw new NotFoundError('Paper portfoy');
   if (actionStates.get(reportFile)?.status === 'pending') {
     throw new ConflictError('Bu portfoy icin bekleyen bir komut var');
@@ -157,7 +220,7 @@ async function runAll(reason: string): Promise<void> {
   }
   running = true;
   try {
-    for (const job of jobs) {
+    for (const job of currentJobs()) {
       await enqueue(job, async () => {
         await runJob(job, job.args, reason);
       });
